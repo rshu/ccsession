@@ -73,14 +73,11 @@ def cmd_export(args: argparse.Namespace) -> int:
                      'trajectory.json', 'RENDERED.md', '.ccsession-manifest.json']:
             detail(f"    - {name}")
 
-        info(f"\n\U0001f4a1 Next steps:")
-        export_name = args.export_name or export_path.name
         try:
             rel_path = export_path.relative_to(cwd)
         except ValueError:
             rel_path = export_path
-        info(f"   git add {rel_path}")
-        info(f"   git commit -m \"Export Claude Code session: {export_name}\"")
+        info(f"\n\U0001f4c1 Export: {rel_path}")
     else:
         # Classic mode
         success(f"\n\u2705 Session exported successfully!")
