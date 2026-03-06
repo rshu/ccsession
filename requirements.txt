@@ -1,0 +1,5 @@
+# No runtime dependencies — ccsession uses only the Python standard library.
+# Python 3.9+ required.
+
+# Dev
+pytest>=7.0.0

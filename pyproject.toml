@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ccsession"
+dynamic = ["version"]
+description = "Export, import, and restore Claude Code sessions"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+keywords = ["claude", "claude-code", "session", "export", "trajectory"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Documentation",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0"]
+
+[project.scripts]
+ccsession = "ccsession.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/jimmc414/ccsession"
+Repository = "https://github.com/jimmc414/ccsession"
+Issues = "https://github.com/jimmc414/ccsession/issues"
+
+[tool.setuptools.dynamic]
+version = {attr = "ccsession.CCSESSION_VERSION"}
+
+[tool.setuptools.packages.find]
+include = ["ccsession*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
