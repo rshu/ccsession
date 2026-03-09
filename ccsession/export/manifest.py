@@ -117,11 +117,15 @@ def generate_rendered_markdown(messages: list[dict], metadata: dict, manifest: d
     lines.append("|-----------|--------|")
     lines.append(f"| Main Session | \u2705 `session/main.jsonl` |")
     agent_count = len(manifest['session_data']['agent_sessions'])
-    lines.append(f"| Agent Sessions | {'\u2705 ' + str(agent_count) + ' files' if agent_count else '\u2796 None'} |")
+    agent_status = f"\u2705 {agent_count} files" if agent_count else "\u2796 None"
+    lines.append(f"| Agent Sessions | {agent_status} |")
     fh_count = len(manifest['session_data']['file_history'])
-    lines.append(f"| File History | {'\u2705 ' + str(fh_count) + ' snapshots' if fh_count else '\u2796 None'} |")
-    lines.append(f"| Plan File | {'\u2705 Included' if manifest['session_data']['plan_file'] else '\u2796 None'} |")
-    lines.append(f"| Todos | {'\u2705 Included' if manifest['session_data']['todos'] else '\u2796 None'} |")
+    fh_status = f"\u2705 {fh_count} snapshots" if fh_count else "\u2796 None"
+    lines.append(f"| File History | {fh_status} |")
+    plan_status = "\u2705 Included" if manifest['session_data']['plan_file'] else "\u2796 None"
+    lines.append(f"| Plan File | {plan_status} |")
+    todo_status = "\u2705 Included" if manifest['session_data']['todos'] else "\u2796 None"
+    lines.append(f"| Todos | {todo_status} |")
     lines.append("")
 
     # Config summary
@@ -130,17 +134,24 @@ def generate_rendered_markdown(messages: list[dict], metadata: dict, manifest: d
     lines.append("| Component | Status |")
     lines.append("|-----------|--------|")
     cmd_count = len(manifest['config_snapshot']['commands'])
-    lines.append(f"| Commands | {'\u2705 ' + str(cmd_count) + ' files' if cmd_count else '\u2796 None'} |")
+    cmd_status = f"\u2705 {cmd_count} files" if cmd_count else "\u2796 None"
+    lines.append(f"| Commands | {cmd_status} |")
     skill_count = len(manifest['config_snapshot']['skills'])
-    lines.append(f"| Skills | {'\u2705 ' + str(skill_count) + ' files' if skill_count else '\u2796 None'} |")
+    skill_status = f"\u2705 {skill_count} files" if skill_count else "\u2796 None"
+    lines.append(f"| Skills | {skill_status} |")
     hook_count = len(manifest['config_snapshot']['hooks'])
-    lines.append(f"| Hooks | {'\u2705 ' + str(hook_count) + ' files' if hook_count else '\u2796 None'} |")
+    hook_status = f"\u2705 {hook_count} files" if hook_count else "\u2796 None"
+    lines.append(f"| Hooks | {hook_status} |")
     agent_cfg_count = len(manifest['config_snapshot']['agents'])
-    lines.append(f"| Agents | {'\u2705 ' + str(agent_cfg_count) + ' files' if agent_cfg_count else '\u2796 None'} |")
+    agent_cfg_status = f"\u2705 {agent_cfg_count} files" if agent_cfg_count else "\u2796 None"
+    lines.append(f"| Agents | {agent_cfg_status} |")
     rule_count = len(manifest['config_snapshot']['rules'])
-    lines.append(f"| Rules | {'\u2705 ' + str(rule_count) + ' files' if rule_count else '\u2796 None'} |")
-    lines.append(f"| Settings | {'\u2705 Included' if manifest['config_snapshot']['settings'] else '\u2796 None'} |")
-    lines.append(f"| CLAUDE.md | {'\u2705 Included' if manifest['config_snapshot']['claude_md'] else '\u2796 None'} |")
+    rule_status = f"\u2705 {rule_count} files" if rule_count else "\u2796 None"
+    lines.append(f"| Rules | {rule_status} |")
+    settings_status = "\u2705 Included" if manifest['config_snapshot']['settings'] else "\u2796 None"
+    lines.append(f"| Settings | {settings_status} |")
+    claude_md_status = "\u2705 Included" if manifest['config_snapshot']['claude_md'] else "\u2796 None"
+    lines.append(f"| CLAUDE.md | {claude_md_status} |")
     lines.append("")
 
     # Conversation
