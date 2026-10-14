@@ -110,3 +110,7 @@ claude_export_*/
 conversation_full.*
 summary.txt
 session_info.json
+
+# Planning workspaces (never part of the package)
+docs/superpowers/
+.superpowers/
