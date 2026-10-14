@@ -9,6 +9,23 @@ from ccsession.constants import TRAJECTORY_FORMAT_VERSION
 from ccsession.export.parsers import parse_jsonl_file
 from ccsession.utils import parse_iso_timestamp
 
+# Top-level keys of a non-message record that _transform_event maps explicitly
+_EVENT_MAPPED_KEYS = frozenset({
+    'type', 'timestamp', 'uuid', 'parentUuid', 'cwd', 'sessionId',
+    'data', 'toolUseID', 'parentToolUseID', 'messageId', 'snapshot',
+})
+# Top-level keys of a message record that _transform_turn maps explicitly
+_TURN_MAPPED_KEYS = frozenset({
+    'type', 'timestamp', 'uuid', 'parentUuid', 'cwd', 'sessionId', 'message', 'toolUseResult',
+    'isSidechain', 'userType', 'requestId', 'durationMs', 'permissionMode',
+})
+# camelCase meta.json keys -> snake_case trajectory keys
+_AGENT_META_KEYS = {
+    'agentType': 'agent_type', 'description': 'description', 'toolUseId': 'tool_use_id',
+    'spawnDepth': 'spawn_depth', 'requestShape': 'request_shape',
+    'requestNonInteractive': 'request_non_interactive', 'parentAgentId': 'parent_agent_id', 'name': 'name',
+}
+
 
 def _transform_content_block(block: dict) -> dict | None:
     """Transform a single content block from raw JSONL to trajectory format."""
@@ -79,6 +96,9 @@ def _transform_event(msg: dict, index: int) -> dict:
         event['message_id'] = msg['messageId']
     if 'snapshot' in msg:
         event['snapshot'] = msg['snapshot']
+
+    # Everything else travels verbatim so no record type is lossy
+    event['payload'] = {k: v for k, v in msg.items() if k not in _EVENT_MAPPED_KEYS}
 
     return event
 
@@ -151,6 +171,11 @@ def _transform_turn(msg: dict, index: int) -> dict:
     if 'toolUseResult' in msg and isinstance(msg['toolUseResult'], dict):
         turn['tool_execution'] = msg['toolUseResult']
 
+    # Per-turn context Claude Code adds over time (promptId, effort, turnOrigin, ...)
+    meta = {k: v for k, v in msg.items() if k not in _TURN_MAPPED_KEYS}
+    if meta:
+        turn['meta'] = meta
+
     return turn
 
 
@@ -165,6 +190,7 @@ def _compute_statistics(turns: list[dict]) -> dict:
     tokens_output = 0
     tokens_cache_read = 0
     tokens_cache_creation = 0
+    events_by_type: dict[str, int] = {}
 
     for turn in turns:
         role = turn['role']
@@ -179,6 +205,8 @@ def _compute_statistics(turns: list[dict]) -> dict:
             tokens_cache_creation += usage.get('cache_creation_input_tokens', 0)
         elif role == 'event':
             events += 1
+            event_type = turn.get('event_type', 'unknown')
+            events_by_type[event_type] = events_by_type.get(event_type, 0) + 1
 
         for block in turn.get('content', []):
             if block.get('type') == 'tool_call':
@@ -191,6 +219,7 @@ def _compute_statistics(turns: list[dict]) -> dict:
         'user_turns': user_turns,
         'assistant_turns': assistant_turns,
         'events': events,
+        'events_by_type': dict(sorted(events_by_type.items())),
         'tool_calls': tool_calls,
         'tool_calls_by_name': dict(sorted(tool_calls_by_name.items(), key=lambda x: -x[1])),
         'tokens': {
@@ -223,6 +252,31 @@ def _find_spawning_tool_call_id(main_messages: list[dict], agent_id: str) -> str
         for block in content:
             if isinstance(block, dict) and block.get('type') == 'tool_result':
                 return block.get('tool_use_id')
+    return None
+
+
+def load_agent_meta(agent_path: Path) -> dict:
+    """Read the ``agent-<id>.meta.json`` sidecar next to a sub-agent transcript.
+
+    Returns a dict with snake_case keys (``agent_type``, ``tool_use_id``, ...);
+    empty when the sidecar is missing or unreadable.
+    """
+    meta_path = agent_path.with_name(agent_path.name[:-len('.jsonl')] + '.meta.json')
+    try:
+        with open(meta_path, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {snake: raw[camel] for camel, snake in _AGENT_META_KEYS.items() if camel in raw}
+
+
+def _last_cost_usd(messages: list[dict]) -> float | None:
+    """Total cost recorded by the last ``cost-state`` record, if any."""
+    for msg in reversed(messages):
+        if msg.get('type') == 'cost-state' and isinstance(msg.get('totalCostUSD'), (int, float)):
+            return float(msg['totalCostUSD'])
     return None
 
 
@@ -271,6 +325,7 @@ def format_trajectory(messages: list[dict], metadata: dict, msg_meta: dict,
 
     # Compute statistics
     stats = _compute_statistics(turns)
+    stats['cost_usd'] = _last_cost_usd(messages)
 
     # Session metadata
     session: dict = {
@@ -302,8 +357,12 @@ def format_trajectory(messages: list[dict], metadata: dict, msg_meta: dict,
         for agent_id, agent_path in agent_sessions.items():
             agent_data = _parse_agent_trajectory(agent_path)
             agent_data['agent_id'] = agent_id
-            agent_data['spawned_by_tool_call_id'] = _find_spawning_tool_call_id(
-                messages, agent_id,
+            meta = load_agent_meta(agent_path)
+            agent_data['meta'] = meta
+            # The meta sidecar names the spawning tool call even for background
+            # agents whose result never reached the main transcript.
+            agent_data['spawned_by_tool_call_id'] = (
+                meta.get('tool_use_id') or _find_spawning_tool_call_id(messages, agent_id)
             )
             sub_agents.append(agent_data)
 

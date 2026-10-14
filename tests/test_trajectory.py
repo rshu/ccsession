@@ -371,7 +371,7 @@ class TestFormatTrajectory:
         messages = [_user_msg(), _assistant_msg()]
         result = format_trajectory(messages, self._make_metadata(), self._make_msg_meta())
         assert result["format"] == "ccsession-trajectory"
-        assert result["format_version"] == "1.0"
+        assert result["format_version"] == "1.1"
         assert result["generator"]["name"] == "ccsession"
         assert "session" in result
         assert "statistics" in result
@@ -557,3 +557,54 @@ class TestSubAgentLinking:
                                    agent_sessions=self._agent_files(tmp_path, "ccccccccccccccccc"))
 
         assert result["sub_agents"][0]["spawned_by_tool_call_id"] is None
+
+
+class TestLosslessTrajectory:
+    METADATA = TestSubAgentLinking.METADATA
+    MSG_META = TestSubAgentLinking.MSG_META
+
+    def test_event_records_keep_their_payload(self):
+        last_prompt = {"type": "last-prompt", "sessionId": "s", "lastPrompt": "fix it", "leafUuid": "u9"}
+        cost = {"type": "cost-state", "sessionId": "s", "totalCostUSD": 0.49, "modelUsage": {"claude-sonnet-5-5": {}}}
+        attachment = {"type": "attachment", "uuid": "a1", "parentUuid": "u1", "sessionId": "s", "cwd": "/p",
+                      "timestamp": "2026-10-14T02:50:00.000Z", "attachment": {"type": "date", "date": "2026-10-14"}}
+        result = format_trajectory([last_prompt, cost, attachment], self.METADATA, self.MSG_META)
+
+        events = {e["event_type"]: e for e in result["trajectory"]}
+        assert events["last-prompt"]["payload"] == {"lastPrompt": "fix it", "leafUuid": "u9"}
+        assert events["cost-state"]["payload"]["totalCostUSD"] == 0.49
+        assert events["attachment"]["payload"] == {"attachment": {"type": "date", "date": "2026-10-14"}}
+        assert events["attachment"]["uuid"] == "a1" and events["attachment"]["parent_uuid"] == "u1"
+        assert result["statistics"]["events_by_type"] == {"attachment": 1, "cost-state": 1, "last-prompt": 1}
+        assert result["statistics"]["cost_usd"] == 0.49
+
+    def test_turn_records_keep_unmapped_fields_under_meta(self):
+        msg = _user_msg(uuid="u1", text="hi")
+        msg.update({"promptId": "p1", "turnOrigin": "user", "turnPosition": 0, "effort": "high",
+                    "isCompactSummary": True, "slug": "parsed-finding-starfish"})
+        turn = _transform_turn(msg, 0)
+        assert turn["meta"] == {"promptId": "p1", "turnOrigin": "user", "turnPosition": 0, "effort": "high",
+                                "isCompactSummary": True, "slug": "parsed-finding-starfish"}
+        assert "meta" not in _transform_turn(_user_msg(uuid="u2", text="plain"), 1)
+
+    def test_sub_agent_meta_sidecar_is_surfaced_and_used_for_linking(self, tmp_path):
+        agent_id = "a9ba8b4d8b37efc78"
+        agent_path = tmp_path / f"agent-{agent_id}.jsonl"
+        agent_path.write_text(json.dumps(_user_msg(uuid="s1", text="sub")) + "\n", encoding="utf-8")
+        (tmp_path / f"agent-{agent_id}.meta.json").write_text(json.dumps({
+            "agentType": "Explore", "description": "Find buggy function", "toolUseId": "toolu_01WUM9",
+            "spawnDepth": 1, "requestShape": "foreground", "requestNonInteractive": True}), encoding="utf-8")
+
+        result = format_trajectory([_user_msg(uuid="u1", text="hi")], self.METADATA, self.MSG_META,
+                                   agent_sessions={agent_id: agent_path})
+
+        sub = result["sub_agents"][0]
+        assert sub["meta"] == {"agent_type": "Explore", "description": "Find buggy function",
+                               "tool_use_id": "toolu_01WUM9", "spawn_depth": 1,
+                               "request_shape": "foreground", "request_non_interactive": True}
+        assert sub["spawned_by_tool_call_id"] == "toolu_01WUM9"
+
+    def test_cost_is_none_without_cost_state(self):
+        result = format_trajectory([_user_msg(uuid="u1", text="hi")], self.METADATA, self.MSG_META)
+        assert result["statistics"]["cost_usd"] is None
+        assert result["format_version"] == "1.1"
