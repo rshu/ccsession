@@ -1,7 +1,6 @@
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -23,40 +22,29 @@ class TestGetNormalizedProjectDir:
     """Tests for path normalization logic."""
 
     def test_unix_path_basic(self):
-        with patch("ccsession.paths.os.name", "posix"):
-            result = get_normalized_project_dir("/home/user/project")
-            assert result == "-home-user-project"
+        assert get_normalized_project_dir("/home/user/project", platform="posix") == "-home-user-project"
 
     def test_unix_path_with_dots(self):
-        with patch("ccsession.paths.os.name", "posix"):
-            result = get_normalized_project_dir("/mnt/c/project.git")
-            assert result == "-mnt-c-project-git"
+        assert get_normalized_project_dir("/mnt/c/project.git", platform="posix") == "-mnt-c-project-git"
 
     def test_unix_path_with_underscores(self):
-        with patch("ccsession.paths.os.name", "posix"):
-            result = get_normalized_project_dir("/mnt/c/my_project")
-            assert result == "-mnt-c-my-project"
+        assert get_normalized_project_dir("/mnt/c/my_project", platform="posix") == "-mnt-c-my-project"
 
     def test_windows_path(self):
-        with patch("ccsession.paths.os.name", "nt"):
-            # C:\Users\user\project -> C-\Users\user\project (: -> -) -> C--Users-user-project (\ -> -)
-            result = get_normalized_project_dir("C:\\Users\\user\\project")
-            assert result == "C--Users-user-project"
+        # C:\Users\user\project -> C-\Users\user\project (: -> -) -> C--Users-user-project (\ -> -)
+        assert get_normalized_project_dir("C:\\Users\\user\\project", platform="nt") == "C--Users-user-project"
 
     def test_windows_path_no_leading_dash(self):
-        with patch("ccsession.paths.os.name", "nt"):
-            result = get_normalized_project_dir("C:\\project")
-            assert not result.startswith("-")
+        assert not get_normalized_project_dir("C:\\project", platform="nt").startswith("-")
 
     def test_unix_path_has_leading_dash(self):
-        with patch("ccsession.paths.os.name", "posix"):
-            result = get_normalized_project_dir("/home/user/project")
-            assert result.startswith("-")
+        assert get_normalized_project_dir("/home/user/project", platform="posix").startswith("-")
 
     def test_accepts_path_object(self):
-        with patch("ccsession.paths.os.name", "posix"):
-            result = get_normalized_project_dir(Path("/home/user/project"))
-            assert result == "-home-user-project"
+        assert get_normalized_project_dir(Path("/home/user/project"), platform="posix") == "-home-user-project"
+
+    def test_defaults_to_the_running_platform(self):
+        assert get_normalized_project_dir("/x") == get_normalized_project_dir("/x", platform=os.name)
 
 
 class TestDirectoryHelpers:
@@ -64,9 +52,8 @@ class TestDirectoryHelpers:
 
     def test_get_projects_dir(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        with patch("ccsession.paths.os.name", "posix"):
-            result = get_projects_dir("/home/user/project")
-            assert result == tmp_path / ".claude" / "projects" / "-home-user-project"
+        expected_name = get_normalized_project_dir("/home/user/project")  # platform-specific spelling
+        assert get_projects_dir("/home/user/project") == tmp_path / ".claude" / "projects" / expected_name
 
     def test_get_file_history_dir(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -112,10 +99,10 @@ class TestClaudeConfigDir:
 
     def test_every_helper_derives_from_config_dir(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
-        with patch("ccsession.paths.os.name", "posix"):
-            assert get_projects_root() == tmp_path / "cfg" / "projects"
-            assert get_projects_dir("/home/user/project") == tmp_path / "cfg" / "projects" / "-home-user-project"
-            assert get_session_dir("/home/user/project", "abc") == tmp_path / "cfg" / "projects" / "-home-user-project" / "abc"
+        name = get_normalized_project_dir("/home/user/project")
+        assert get_projects_root() == tmp_path / "cfg" / "projects"
+        assert get_projects_dir("/home/user/project") == tmp_path / "cfg" / "projects" / name
+        assert get_session_dir("/home/user/project", "abc") == tmp_path / "cfg" / "projects" / name / "abc"
         assert get_file_history_dir("abc") == tmp_path / "cfg" / "file-history" / "abc"
         assert get_session_env_dir("abc") == tmp_path / "cfg" / "session-env" / "abc"
         assert get_history_file() == tmp_path / "cfg" / "history.jsonl"

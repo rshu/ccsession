@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -73,7 +74,7 @@ def test_refuses_to_overwrite_a_populated_target(tmp_path):
     target = tmp_path / "target" / NEW_SID
     (target / "subagents").mkdir(parents=True)
     (target / "subagents" / "agent-x.jsonl").write_text("{}\n", encoding="utf-8")
-    with pytest.raises(FileExistsError, match=str(target)):
+    with pytest.raises(FileExistsError, match=re.escape(str(target))):
         import_session_dir(tmp_path / "export", manifest, target, _plan())
 
 

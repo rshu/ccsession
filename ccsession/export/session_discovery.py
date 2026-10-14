@@ -17,7 +17,9 @@ def get_parent_claude_pid() -> int | None:
         # Get parent PID of current process
         ppid = os.getppid()
         # Check if parent is a claude process
-        result = subprocess.run(['ps', '-p', str(ppid), '-o', 'args='],
+        # -ww: unlimited width on both GNU and BSD ps; otherwise procps truncates
+        # to $COLUMNS (which pytest and some CI shells set to 80) and hides the end
+        result = subprocess.run(['ps', '-ww', '-p', str(ppid), '-o', 'args='],
                               capture_output=True, text=True)
         if 'claude' in result.stdout:
             return ppid
