@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from ccsession.paths import (
-    get_file_history_dir, get_plans_dir, get_todos_dir, get_session_env_dir,
+    get_file_history_dir, get_plans_dir, get_todos_dir, get_session_env_dir, get_history_file,
 )
 
 
@@ -89,6 +89,41 @@ def collect_tool_results(claude_project_dir: Path, session_id: str) -> list[Path
         return []
 
     return sorted(f for f in tool_results_dir.iterdir() if f.is_file())
+
+
+def collect_session_dir_files(claude_project_dir: Path, session_id: str) -> list[Path]:
+    """Collect every file under the per-session directory.
+
+    Claude Code 2.1 keeps sub-agent transcripts and their ``.meta.json`` sidecars,
+    tool-result sidecars, Workflow runs and loose diagnostics under
+    ``<project-dir>/<session-id>/``. The export mirrors that tree verbatim, so
+    this returns regular files recursively, sorted for stable output.
+    """
+    session_dir = claude_project_dir / session_id
+    if not session_dir.is_dir():
+        return []
+    return sorted(p for p in session_dir.rglob('*') if p.is_file())
+
+
+def collect_history_lines(session_id: str) -> list[dict]:
+    """Return the prompt-history records that belong to a session.
+
+    ``<claude-dir>/history.jsonl`` holds one record per prompt with a
+    ``sessionId``; the CLI uses it for prompt recall. Unparseable lines are skipped.
+    """
+    history_file = get_history_file()
+    if not history_file.is_file():
+        return []
+    records: list[dict] = []
+    with open(history_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict) and record.get('sessionId') == session_id:
+                records.append(record)
+    return records
 
 
 def collect_file_history(session_id: str) -> list[Path]:
