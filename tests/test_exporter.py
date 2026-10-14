@@ -54,27 +54,30 @@ def test_export_mirrors_the_session_dir_and_history(tmp_path, monkeypatch):
     assert (mirror / "tool-results" / "bvce53z33.txt").read_text(encoding="utf-8") == "big output"
     assert (mirror / "workflows" / "scripts" / "wf_1.js").is_file()
     assert (mirror / "auto-mode-classifier-error.txt").is_file()
-    assert (export_dir / "session" / "agents" / f"agent-{AGENT}.jsonl").is_file()
     history = (export_dir / "session" / "history.jsonl").read_text(encoding="utf-8").splitlines()
     assert json.loads(history[0])["display"] == "hi"
     assert manifest["layout_version"] == 2
     assert manifest["session_data"]["session_dir"] == "session/session-dir/"
     assert manifest["session_data"]["history"] == "session/history.jsonl"
+    assert manifest["session_data"]["agent_sessions"] == [f"session/session-dir/subagents/agent-{AGENT}.jsonl"]
     assert manifest["session_data"]["agent_meta"] == [f"session/session-dir/subagents/agent-{AGENT}.meta.json"]
     assert manifest["claude_code_version"] == "2.1.287"
 
 
-def test_export_writes_no_placeholders_for_absent_legacy_data(tmp_path, monkeypatch):
+def test_export_has_no_legacy_copies_or_stores(tmp_path, monkeypatch):
+    """Sub-agents and tool results live only in the session-dir mirror; the todos/plans
+    stores of older Claude Code releases are not part of the format."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     claude = _fake_claude_dir(tmp_path)
     session_info = {"path": claude / "projects" / "-home-user-proj" / f"{SID}.jsonl", "session_id": SID, "mtime": 0}
 
     export_dir, manifest = export_session(session_info, PROJECT, export_name="t", output_dir=tmp_path / "out")
 
+    assert not (export_dir / "session" / "agents").exists()
+    assert not (export_dir / "session" / "tool-results").exists()
     assert not (export_dir / "session" / "plan.md").exists()
     assert not (export_dir / "session" / "todos.json").exists()
-    assert manifest["session_data"]["plan_file"] is None
-    assert manifest["session_data"]["todos"] is None
+    assert not {"plan_file", "todos", "tool_results"} & set(manifest["session_data"])
 
 
 def test_export_marks_an_empty_session_dir(tmp_path, monkeypatch):

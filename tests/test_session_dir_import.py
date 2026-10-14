@@ -58,23 +58,6 @@ def test_layout2_mirror_is_restored_with_agent_transcripts_remapped(tmp_path):
     assert (target / "auto-mode-classifier-error.txt").is_file()
 
 
-def test_legacy_layout_agents_are_restored_into_subagents(tmp_path):
-    export = tmp_path / "export"
-    (export / "session" / "agents").mkdir(parents=True)
-    (export / "session" / "agents" / f"agent-{AGENT}.jsonl").write_text(
-        json.dumps({"type": "user", "uuid": "s1", "agentId": AGENT, "sessionId": OLD_SID}) + "\n", encoding="utf-8")
-    (export / "session" / "agents" / "_empty").write_text("", encoding="utf-8")
-    manifest = {"session_data": {"agent_sessions": [f"session/agents/agent-{AGENT}.jsonl"]}}
-    target = tmp_path / "target" / NEW_SID
-
-    result = import_session_dir(export, manifest, target, _plan())
-
-    assert result == SessionDirImport(files=1, agents=1)
-    restored = json.loads((target / "subagents" / f"agent-{AGENT}.jsonl").read_text(encoding="utf-8"))
-    assert restored["uuid"] == "n1" and restored["agentId"] == AGENT
-    assert not (target / "subagents" / "_empty").exists()
-
-
 def test_empty_marker_and_missing_mirror_import_nothing(tmp_path):
     export = tmp_path / "export"
     (export / "session" / "session-dir").mkdir(parents=True)

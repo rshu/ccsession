@@ -9,8 +9,7 @@ import xml.etree.ElementTree as ET
 from ccsession.export.parsers import parse_jsonl_file, extract_message_metadata
 from ccsession.export.formatters import format_message_markdown, format_message_xml, prettify_xml
 from ccsession.export.collectors import (
-    collect_agent_sessions, collect_file_history, collect_plan_file,
-    collect_todos, collect_session_env, collect_tool_results, collect_project_config,
+    collect_agent_sessions, collect_file_history, collect_session_env, collect_project_config,
     collect_session_dir_files, collect_history_lines,
 )
 from ccsession.export.manifest import generate_manifest, generate_rendered_markdown, write_empty_marker
@@ -98,22 +97,6 @@ def _write_legacy_files(export_dir: Path, session_path: Path, messages: list[dic
         f.write(f"\nExported to: {export_dir}\n")
 
 
-def _merge_todo_files(todo_files: list[Path]) -> list:
-    """Concatenate legacy todo JSON files into one list, skipping unreadable ones."""
-    merged: list = []
-    for todo_file in todo_files:
-        try:
-            with open(todo_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            continue
-        if isinstance(data, list):
-            merged.extend(data)
-        else:
-            merged.append(data)
-    return merged
-
-
 def _copy_files_to_dir(files: list, target_dir: Path, empty_message: str) -> None:
     """Copy files to a directory, or write an empty marker if no files."""
     target_dir.mkdir(exist_ok=True)
@@ -179,15 +162,12 @@ def export_session(session_info: dict, project_path: str | Path,
     print("\U0001f4e6 Collecting session data...")
 
     # The claude project dir is the parent of the session file
-    # (e.g., ~/.claude/projects/-home-rshu-ccsession/)
+    # (e.g., ~/.claude/projects/-home-user-project/)
     claude_project_dir = session_info['path'].parent
 
     agent_sessions = collect_agent_sessions(claude_project_dir, session_id)
     file_history = collect_file_history(session_id)
-    plan_file = collect_plan_file(slug)
-    todos = collect_todos(session_id)
     session_env = collect_session_env(session_id)
-    tool_results = collect_tool_results(claude_project_dir, session_id)
     session_dir_root = claude_project_dir / session_id
     session_dir_files = collect_session_dir_files(claude_project_dir, session_id)
     history_lines = collect_history_lines(session_id)
@@ -195,10 +175,7 @@ def export_session(session_info: dict, project_path: str | Path,
     session_files = {
         'agents': agent_sessions,
         'file_history': file_history,
-        'plan': plan_file,
-        'todos': todos,
         'session_env': session_env,
-        'tool_results': tool_results,
         'session_dir_root': session_dir_root,
         'session_dir_files': session_dir_files,
         'history': history_lines,
@@ -223,28 +200,9 @@ def export_session(session_info: dict, project_path: str | Path,
     # Main session
     shutil.copy2(session_info['path'], session_dir / 'main.jsonl')
 
-    # Agent sessions
-    agents_dir = session_dir / 'agents'
-    agents_dir.mkdir(exist_ok=True)
-    if agent_sessions:
-        for agent_id, agent_path in agent_sessions.items():
-            shutil.copy2(agent_path, agents_dir / f'agent-{agent_id}.jsonl')
-    else:
-        write_empty_marker(agents_dir, "No agent sessions for this export.")
-
     # File history
     _copy_files_to_dir(file_history, session_dir / 'file-history',
                        "No file history snapshots for this session.")
-
-    # Plan file and todos (legacy stores; Claude Code 2.1 no longer writes them)
-    if plan_file:
-        shutil.copy2(plan_file, session_dir / 'plan.md')
-    if todos:
-        write_json(session_dir / 'todos.json', _merge_todo_files(todos))
-
-    # Tool results
-    _copy_files_to_dir(tool_results, session_dir / 'tool-results',
-                       "No tool-result sidecars for this session.")
 
     # Verbatim mirror of <project-dir>/<session-id>/ (sub-agents + meta, tool results, workflows, diagnostics)
     mirror_dir = session_dir / 'session-dir'
@@ -256,13 +214,6 @@ def export_session(session_info: dict, project_path: str | Path,
             shutil.copy2(source, target)
     else:
         write_empty_marker(mirror_dir, "No per-session directory for this session.")
-    # Legacy flat-layout agents live outside the session dir; normalise them into the mirror
-    for agent_path in agent_sessions.values():
-        if session_dir_root not in agent_path.parents:
-            target = mirror_dir / 'subagents' / agent_path.name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(agent_path, target)
-
     if history_lines:
         with open(session_dir / 'history.jsonl', 'w', encoding='utf-8') as f:
             for record in history_lines:

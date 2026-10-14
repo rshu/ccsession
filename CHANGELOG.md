@@ -26,12 +26,14 @@ live export → import → `claude --resume` run.
   `messageId`, `snapshotMessageId`, `commandUuid`, `logicalParentUuid`,
   `sourceToolAssistantUUID`, `foldedUuids`, `supersedesUuids`, compact metadata, ...),
   rewrites `sessionId`/`session_id` only when they name the imported session, maps each
-  sub-agent to a fresh id, and relocates known path fields. Message content is never
-  touched.
+  and relocates known path fields (with `/` or `\\` separators). Message content and
+  sub-agent ids are never touched, so Claude Code's bookkeeping of finished background
+  agents keeps working after a resume.
 - Sub-agent transcripts, meta sidecars, tool results and workflows are restored into
   `<project>/<new-id>/`; prompt history is appended once.
-- Exports from ccsession 2.0.0 still import; exports from a newer layout are refused
-  with an upgrade hint.
+- Exports from ccsession 2.0.0 (layout 1) and from newer layouts are refused with a
+  clear message; the legacy `~/.claude/todos` and `~/.claude/plans` stores and flat
+  `agent-*.jsonl` files of older Claude Code releases are no longer read or written.
 - The completion message now shows `claude --resume <id>`.
 
 ### Fixes
@@ -48,4 +50,6 @@ live export → import → `claude --resume` run.
 - `scripts/capture_fixture.py` captures a sanitized real session as a test fixture;
   `tests/fixtures/claude-2.1.287/` is the first one.
 - `scripts/e2e_live.sh` runs the live end-to-end check against the installed CLI.
-- GitHub Actions CI across Linux, macOS and Windows on Python 3.9, 3.12 and 3.13.
+- GitHub Actions CI across Linux, macOS and Windows on Python 3.9, 3.12, 3.13 and 3.14;
+  tag-triggered publishing through PyPI Trusted Publishing.
+- Manifest-supplied paths are confined to the export directory.

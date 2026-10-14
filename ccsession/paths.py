@@ -66,16 +66,6 @@ def get_file_history_dir(session_id: str) -> Path:
     return get_claude_dir() / 'file-history' / session_id
 
 
-def get_todos_dir() -> Path:
-    """Get <claude-dir>/todos/ (legacy; absent in Claude Code 2.1)."""
-    return get_claude_dir() / 'todos'
-
-
-def get_plans_dir() -> Path:
-    """Get <claude-dir>/plans/ (legacy; absent in Claude Code 2.1)."""
-    return get_claude_dir() / 'plans'
-
-
 def get_session_env_dir(session_id: str) -> Path:
     """Get <claude-dir>/session-env/<session_id>/."""
     return get_claude_dir() / 'session-env' / session_id

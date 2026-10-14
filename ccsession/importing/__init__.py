@@ -5,7 +5,7 @@ from ccsession.importing.uuids import generate_new_session_id, generate_new_agen
 from ccsession.importing.remap import RemapPlan, build_remap_plan, remap_record, remap_records, most_common_cwd
 from ccsession.importing.snapshot import create_snapshot
 from ccsession.importing.session_io import read_session_jsonl, write_session_file
-from ccsession.importing.auxiliary import import_file_history, import_todos, import_plan
+from ccsession.importing.auxiliary import import_file_history
 from ccsession.importing.session_dir import SessionDirImport, import_session_dir, import_history
 from ccsession.importing.config import import_config, add_claude_md_note
 from ccsession.importing.import_log import log_import
@@ -25,8 +25,6 @@ __all__ = [
     'read_session_jsonl',
     'write_session_file',
     'import_file_history',
-    'import_todos',
-    'import_plan',
     'SessionDirImport',
     'import_session_dir',
     'import_history',

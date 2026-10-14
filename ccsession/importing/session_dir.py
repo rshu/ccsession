@@ -27,8 +27,7 @@ def import_session_dir(export_path: Path, manifest: dict, target_session_dir: Pa
                        plan: RemapPlan) -> SessionDirImport:
     """Restore ``<project-dir>/<session-id>/`` from an export.
 
-    Layout 2 exports carry a verbatim mirror under ``session/session-dir/``; layout 1
-    exports only carry sub-agent transcripts under ``session/agents/``. Every
+    The export carries a verbatim mirror under ``session/session-dir/``. Every
     ``.jsonl`` under ``subagents/`` is a transcript and every ``.json`` there a
     sidecar: both are rewritten through ``plan`` (file names, which carry the agent
     id, never change). Every other file is copied as is.
@@ -102,18 +101,14 @@ def _iter_sources(export_path: Path, manifest: dict) -> Iterator[tuple]:
     """Yield (source_file, relative_target_path) pairs for the files to restore."""
     session_data = manifest.get('session_data', {})
     mirror = session_data.get('session_dir')
-    if mirror:
-        root = resolve_export_path(export_path, mirror)
-        if root.is_dir():
-            for source in sorted(p for p in root.rglob('*') if p.is_file()):
-                if source.name != _EMPTY_MARKER:
-                    yield source, source.relative_to(root)
+    if not mirror:
         return
-    # Layout 1 (ccsession 2.0.0): only sub-agent transcripts, under session/agents/
-    for relative in session_data.get('agent_sessions', []):
-        source = resolve_export_path(export_path, relative)
-        if source.is_file() and source.name != _EMPTY_MARKER:
-            yield source, Path('subagents') / source.name
+    root = resolve_export_path(export_path, mirror)
+    if not root.is_dir():
+        return
+    for source in sorted(p for p in root.rglob('*') if p.is_file()):
+        if source.name != _EMPTY_MARKER:
+            yield source, source.relative_to(root)
 
 
 def _read_json(path: Path) -> dict:

@@ -13,8 +13,6 @@ from ccsession.paths import (
     get_normalized_project_dir,
     get_projects_dir,
     get_file_history_dir,
-    get_todos_dir,
-    get_plans_dir,
     get_session_env_dir,
     get_import_storage_dir,
     get_snapshot_dir,
@@ -75,16 +73,6 @@ class TestDirectoryHelpers:
         result = get_file_history_dir("abc-123")
         assert result == tmp_path / ".claude" / "file-history" / "abc-123"
 
-    def test_get_todos_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        result = get_todos_dir()
-        assert result == tmp_path / ".claude" / "todos"
-
-    def test_get_plans_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        result = get_plans_dir()
-        assert result == tmp_path / ".claude" / "plans"
-
     def test_get_session_env_dir(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         result = get_session_env_dir("abc-123")
@@ -116,7 +104,9 @@ class TestClaudeConfigDir:
         assert get_claude_dir() == tmp_path / ".claude"
 
     def test_tilde_in_env_value_is_expanded(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HOME", str(tmp_path))  # expanduser() reads $HOME, not Path.home()
+        # expanduser() reads $HOME on POSIX and USERPROFILE on Windows, not Path.home()
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", "~/alt-claude")
         assert get_claude_dir() == tmp_path / "alt-claude"
 
@@ -128,6 +118,4 @@ class TestClaudeConfigDir:
             assert get_session_dir("/home/user/project", "abc") == tmp_path / "cfg" / "projects" / "-home-user-project" / "abc"
         assert get_file_history_dir("abc") == tmp_path / "cfg" / "file-history" / "abc"
         assert get_session_env_dir("abc") == tmp_path / "cfg" / "session-env" / "abc"
-        assert get_todos_dir() == tmp_path / "cfg" / "todos"
-        assert get_plans_dir() == tmp_path / "cfg" / "plans"
         assert get_history_file() == tmp_path / "cfg" / "history.jsonl"

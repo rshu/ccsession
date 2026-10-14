@@ -26,7 +26,8 @@ done
 
 command -v claude >/dev/null || { echo "claude CLI not found on PATH" >&2; exit 2; }
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/ccsession-e2e.XXXXXX")
+# Resolve symlinks (macOS /var -> /private/var): Claude Code records the real path.
+WORK=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/ccsession-e2e.XXXXXX")" && pwd -P)
 CLAUDE_DIR=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
 export PYTHONPATH=$REPO${PYTHONPATH:+:$PYTHONPATH}
 SID=""

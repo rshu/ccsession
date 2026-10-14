@@ -3,92 +3,23 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ccsession.paths import (
-    get_file_history_dir, get_plans_dir, get_todos_dir, get_session_env_dir, get_history_file,
-)
+from ccsession.paths import get_file_history_dir, get_session_env_dir, get_history_file
 
 
 def collect_agent_sessions(claude_project_dir: Path, session_id: str) -> dict[str, Path]:
-    """Collect all sub-agent transcript files belonging to a session.
+    """Collect the sub-agent transcripts of a session.
 
-    Two on-disk layouts exist:
-      1. Per-session (current): <project-dir>/<session-id>/subagents/agent-*.jsonl
-         Every file in this folder belongs to the session by construction.
-      2. Legacy flat: <project-dir>/agent-*.jsonl, shared by all sessions of the
-         project; a file belongs to the session if its first line's sessionId matches.
+    Claude Code 2.1 writes them to ``<project-dir>/<session-id>/subagents/agent-<id>.jsonl``,
+    so every transcript in that folder belongs to the session by construction. Files
+    are deliberately not required to be referenced from the main transcript: background
+    and async agents often leave no agentId there, yet their transcripts still exist.
 
-    Files are deliberately not required to be referenced from the main transcript:
-    background and async agents often leave no agentId there, yet their transcripts
-    still exist on disk and must be exported.
-
-    Args:
-        claude_project_dir: The ~/.claude/projects/<normalized>/ directory
-        session_id: The session UUID
-
-    Returns dict with agent_id -> file_path mapping. Per-session files take precedence.
+    Returns dict with agent_id -> file_path mapping, sorted by agent id.
     """
-    agents: dict[str, Path] = {}
-
-    if not claude_project_dir.exists():
-        return agents
-
-    for agent_file in _iter_agent_files(claude_project_dir / session_id / 'subagents'):
-        agents.setdefault(_agent_id_from_path(agent_file), agent_file)
-
-    for agent_file in _iter_agent_files(claude_project_dir):
-        agent_id = _agent_id_from_path(agent_file)
-        if agent_id in agents:
-            continue
-        if _first_line_session_id(agent_file) == session_id:
-            agents[agent_id] = agent_file
-
-    return agents
-
-
-def _iter_agent_files(directory: Path):
-    """Yield agent-*.jsonl transcripts in a directory, skipping compaction snapshots."""
-    if not directory.exists():
-        return
-    for agent_file in sorted(directory.glob('agent-*.jsonl')):
-        if _agent_id_from_path(agent_file).startswith('compact-'):
-            continue
-        yield agent_file
-
-
-def _agent_id_from_path(agent_file: Path) -> str:
-    return agent_file.stem[len('agent-'):]
-
-
-def _first_line_session_id(agent_file: Path) -> str | None:
-    """Return the sessionId recorded on the first line of a transcript, if readable."""
-    try:
-        with open(agent_file, 'r', encoding='utf-8') as f:
-            first_line = f.readline()
-        if not first_line:
-            return None
-        data = json.loads(first_line)
-    except (json.JSONDecodeError, OSError):
-        return None
-    return data.get('sessionId') if isinstance(data, dict) else None
-
-
-def collect_tool_results(claude_project_dir: Path, session_id: str) -> list[Path]:
-    """Collect tool-result sidecar files for a session.
-
-    These are stored at ~/.claude/projects/<normalized>/<session-id>/tool-results/*.txt
-
-    Args:
-        claude_project_dir: The ~/.claude/projects/<normalized>/ directory
-        session_id: The session UUID
-
-    Returns list of file paths or empty list if none.
-    """
-    tool_results_dir = claude_project_dir / session_id / 'tool-results'
-
-    if not tool_results_dir.exists():
-        return []
-
-    return sorted(f for f in tool_results_dir.iterdir() if f.is_file())
+    subagents_dir = claude_project_dir / session_id / 'subagents'
+    if not subagents_dir.is_dir():
+        return {}
+    return {path.stem[len('agent-'):]: path for path in sorted(subagents_dir.glob('agent-*.jsonl'))}
 
 
 def collect_session_dir_files(claude_project_dir: Path, session_id: str) -> list[Path]:
@@ -140,39 +71,6 @@ def collect_file_history(session_id: str) -> list[Path]:
     for f in file_history_dir.iterdir():
         if f.is_file():
             files.append(f)
-
-    return files
-
-
-def collect_plan_file(slug: str | None) -> Path | None:
-    """Collect plan file for a session by slug.
-
-    Returns file path or None if not found.
-    """
-    if not slug:
-        return None
-
-    plan_file = get_plans_dir() / f'{slug}.md'
-
-    if plan_file.exists():
-        return plan_file
-
-    return None
-
-
-def collect_todos(session_id: str) -> list[Path]:
-    """Collect todo files for a session.
-
-    Returns list of file paths or empty list if none.
-    """
-    todos_dir = get_todos_dir()
-
-    if not todos_dir.exists():
-        return []
-
-    files = []
-    for f in todos_dir.glob(f'{session_id}-*.json'):
-        files.append(f)
 
     return files
 

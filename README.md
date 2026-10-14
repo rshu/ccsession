@@ -25,7 +25,8 @@ live export → import → `claude --resume` run with 2.1.287. It understands th
 layout (per-session `subagents/` with `.meta.json` sidecars, `tool-results/`,
 `workflows/`, `history.jsonl`) and record types (`attachment`, `last-prompt`,
 `queue-operation`, `cost-state`, `file-history-snapshot`/`delta`, `system`, ...).
-`CLAUDE_CONFIG_DIR` is honoured. Exports made by ccsession 2.0.0 still import.
+`CLAUDE_CONFIG_DIR` is honoured. Older Claude Code layouts (`~/.claude/todos`, `~/.claude/plans`,
+flat `agent-*.jsonl` files) and exports made by ccsession 2.0.0 are not supported.
 
 ## Export
 
@@ -41,7 +42,6 @@ Exports to `.claude-sessions/my-session/` with:
 - `session/main.jsonl` — raw session transcript
 - `session/session-dir/` — verbatim mirror of `<project>/<session-id>/`: sub-agent
   transcripts and `.meta.json` sidecars, tool-result sidecars, Workflow runs, diagnostics
-- `session/agents/` — sub-agent transcripts (kept for readers of older exports)
 - `session/history.jsonl` — the session's prompt-history lines
 - `session/file-history/`, `session/session-env/` — file snapshots and session env
 - `.ccsession-manifest.json` — metadata (required for import; `layout_version` 2)
@@ -65,10 +65,13 @@ claude --resume <new-session-id>   # printed at the end of the import
 ```
 
 Import validates the manifest, generates a new session id, rewrites every internal
-reference consistently (message uuids and all fields that point at them, session ids,
-sub-agent ids, recorded paths) without touching message content, restores the
-sub-agent transcripts, sidecars and workflows under `<project>/<new-id>/`, appends the
-prompt history, and copies file snapshots. A pre-import snapshot is taken first.
+reference consistently (message uuids wherever they appear outside message content,
+session ids, recorded paths) without touching message content or sub-agent ids,
+restores the sub-agent transcripts, sidecars and workflows under `<project>/<new-id>/`,
+appends the prompt history, and copies file snapshots. A pre-import snapshot is taken
+first. Paths recorded inside tool inputs, `wireToolInputs` and file-history backups keep
+the original machine's paths, so `/rewind` cannot match files after a move to a new
+project path.
 
 ```bash
 # Import into a different project

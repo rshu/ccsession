@@ -75,7 +75,7 @@ def cmd_export(args: argparse.Namespace) -> int:
                 detail(f"    - {name}")
 
         detail(f"  Enhanced structure:")
-        for name in ['session/main.jsonl', 'session/agents/', 'session/file-history/',
+        for name in ['session/main.jsonl', 'session/file-history/',
                      'session/session-dir/', 'session/history.jsonl', 'config/',
                      'trajectory.json', 'RENDERED.md', '.ccsession-manifest.json']:
             detail(f"    - {name}")
@@ -185,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     p_import.add_argument('--skip-config', action='store_true',
                           help="Don't import config files")
     p_import.add_argument('--skip-auxiliary', action='store_true',
-                          help="Don't import file-history, todos, or plan")
+                          help="Don't import file history or prompt history")
     p_import.add_argument('--non-interactive', action='store_true',
                           help='No prompts, use defaults')
 

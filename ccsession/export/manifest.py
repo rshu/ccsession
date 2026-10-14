@@ -10,14 +10,15 @@ from ccsession.utils import utc_now_iso, parse_iso_timestamp
 from ccsession.export.formatters import format_message_markdown
 
 
-def _agent_meta_paths(session_files: dict) -> list[str]:
-    """Manifest paths of the agent-*.meta.json sidecars inside the session-dir mirror."""
+def _mirror_paths(session_files: dict, suffix: str) -> list[str]:
+    """Manifest paths of the agent-* files under subagents/ in the mirror with ``suffix``."""
     root = session_files.get('session_dir_root')
     if not root:
         return []
     return [f"session/session-dir/{Path(f).relative_to(root).as_posix()}"
             for f in session_files.get('session_dir_files', [])
-            if Path(f).name.startswith('agent-') and Path(f).name.endswith('.meta.json')]
+            if Path(f).parent.name == 'subagents' and Path(f).name.startswith('agent-')
+            and Path(f).name.endswith(suffix)]
 
 
 def generate_manifest(session_id: str, slug: str | None, export_name: str, metadata: dict,
@@ -46,15 +47,12 @@ def generate_manifest(session_id: str, slug: str | None, export_name: str, metad
 
         "session_data": {
             "main_session": "session/main.jsonl",
-            "agent_sessions": [f"session/agents/{Path(f).name}" for f in session_files.get('agents', {}).values()],
+            "agent_sessions": _mirror_paths(session_files, '.jsonl'),
+            "agent_meta": _mirror_paths(session_files, '.meta.json'),
             "file_history": [f"session/file-history/{Path(f).name}" for f in session_files.get('file_history', [])],
-            "plan_file": "session/plan.md" if session_files.get('plan') else None,
-            "todos": "session/todos.json" if session_files.get('todos') else None,
             "session_env": "session/session-env/" if session_files.get('session_env') else None,
-            "tool_results": [f"session/tool-results/{Path(f).name}" for f in session_files.get('tool_results', [])],
             "session_dir": "session/session-dir/" if session_files.get('session_dir_files') else None,
             "history": "session/history.jsonl" if session_files.get('history') else None,
-            "agent_meta": _agent_meta_paths(session_files),
         },
 
         "config_snapshot": {
@@ -137,10 +135,8 @@ def generate_rendered_markdown(messages: list[dict], metadata: dict, manifest: d
     fh_count = len(manifest['session_data']['file_history'])
     fh_status = f"\u2705 {fh_count} snapshots" if fh_count else "\u2796 None"
     lines.append(f"| File History | {fh_status} |")
-    plan_status = "\u2705 Included" if manifest['session_data']['plan_file'] else "\u2796 None"
-    lines.append(f"| Plan File | {plan_status} |")
-    todo_status = "\u2705 Included" if manifest['session_data']['todos'] else "\u2796 None"
-    lines.append(f"| Todos | {todo_status} |")
+    mirror_status = "\u2705 `session/session-dir/`" if manifest['session_data']['session_dir'] else "\u2796 None"
+    lines.append(f"| Session Directory | {mirror_status} |")
     lines.append("")
 
     # Config summary

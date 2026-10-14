@@ -101,7 +101,8 @@ class TestImportEdgeCases:
         export_dir = tmp_path / "export"
         export_dir.mkdir()
         manifest = {
-            "ccsession_version": "2.0.0",
+            "ccsession_version": "2.1.0",
+            "layout_version": 2,
             "session_id": "abc123",
             "export_name": "test",
             "session_data": {"main_session": "session/main.jsonl"},
@@ -122,13 +123,15 @@ class TestImportEdgeCases:
         with pytest.raises(ImportError, match="layout_version 99"):
             validate_manifest(export_dir)
 
-    def test_manifest_without_layout_version_is_treated_as_layout_1(self, tmp_path):
+    def test_manifest_from_an_older_layout_is_rejected(self, tmp_path):
+        """ccsession 2.0.0 exports (no layout_version) predate the 2.1 format and are not importable."""
         export_dir = tmp_path / "export"
         export_dir.mkdir()
         (export_dir / ".ccsession-manifest.json").write_text(json.dumps({
             "ccsession_version": "2.0.0", "session_id": "abc",
             "session_data": {"main_session": "session/main.jsonl"}}), encoding="utf-8")
-        assert validate_manifest(export_dir)["layout_version"] == 1
+        with pytest.raises(ImportError, match="older"):
+            validate_manifest(export_dir)
 
 
 # =============================================================================

@@ -63,7 +63,8 @@ def test_validate_manifest_valid(tmp_path):
     export_dir.mkdir()
 
     manifest = {
-        "ccsession_version": "2.0.0",
+        "ccsession_version": "2.1.0",
+        "layout_version": 2,
         "session_id": "test-session-id",
         "session_data": {"main_session": "session/main.jsonl"}
     }
@@ -73,8 +74,7 @@ def test_validate_manifest_valid(tmp_path):
 
     result = validate_manifest(export_dir)
 
-    # 2.0.0 exports carry no layout_version; validation records the default
-    assert result == {**manifest, "layout_version": 1}
+    assert result == manifest
 
 
 # =============================================================================
@@ -265,7 +265,7 @@ def test_import_with_preserved_id_conflict_names_the_existing_file(tmp_path, mon
     export_dir = tmp_path / "export"
     export_dir.mkdir()
     (export_dir / ".ccsession-manifest.json").write_text(json.dumps({
-        "ccsession_version": "2.0.0",
+        "ccsession_version": "2.0.0", "layout_version": 2,
         "session_id": session_id,
         "session_data": {"main_session": "session/main.jsonl"},
     }), encoding="utf-8")
@@ -311,7 +311,7 @@ def _export_with_agent(root, sid, agent_id, project):
         "ccsession_version": "2.1.0", "layout_version": 2, "session_id": sid, "session_slug": None, "export_name": "t",
         "claude_code_version": "2.1.287", "original_context": {"user": "u", "platform": "darwin", "repo_path": project, "git_branch": "main"},
         "session_data": {"main_session": "session/main.jsonl", "agent_sessions": [f"session/session-dir/subagents/agent-{agent_id}.jsonl"],
-                         "file_history": [], "plan_file": None, "todos": None, "session_env": None, "tool_results": [],
+                         "file_history": [], "session_env": None,
                          "session_dir": "session/session-dir/", "history": "session/history.jsonl",
                          "agent_meta": [f"session/session-dir/subagents/agent-{agent_id}.meta.json"]},
         "config_snapshot": {"commands": [], "skills": [], "hooks": [], "agents": [], "rules": [], "settings": None, "claude_md": None},

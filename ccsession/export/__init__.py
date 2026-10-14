@@ -16,8 +16,6 @@ from ccsession.export.formatters import (
 from ccsession.export.collectors import (
     collect_agent_sessions,
     collect_file_history,
-    collect_plan_file,
-    collect_todos,
     collect_session_env,
     collect_project_config,
     collect_session_dir_files,
@@ -42,8 +40,6 @@ __all__ = [
     'prettify_xml',
     'collect_agent_sessions',
     'collect_file_history',
-    'collect_plan_file',
-    'collect_todos',
     'collect_session_env',
     'collect_project_config',
     'collect_session_dir_files',

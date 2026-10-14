@@ -57,29 +57,6 @@ def test_meta_json_sidecars_are_not_collected_as_agents(tmp_path):
     assert set(result) == {agent_id}
 
 
-def test_legacy_flat_layout_matches_agent_files_by_session_id(tmp_path):
-    """In the old flat layout every session's agents share one folder; the first
-    line's sessionId is what says which session a file belongs to."""
-    mine, theirs = "ccccccccccccccccc", "ddddddddddddddddd"
-    mine_file = _write_agent_file(tmp_path / f"agent-{mine}.jsonl", SESSION_ID, mine)
-    _write_agent_file(tmp_path / f"agent-{theirs}.jsonl", OTHER_SESSION_ID, theirs)
-
-    result = collect_agent_sessions(tmp_path, SESSION_ID)
-
-    assert result == {mine: mine_file}
-
-
-def test_per_session_file_wins_over_legacy_duplicate(tmp_path):
-    agent_id = "eeeeeeeeeeeeeeeee"
-    new_style = _write_agent_file(
-        tmp_path / SESSION_ID / "subagents" / f"agent-{agent_id}.jsonl", SESSION_ID, agent_id)
-    _write_agent_file(tmp_path / f"agent-{agent_id}.jsonl", SESSION_ID, agent_id)
-
-    result = collect_agent_sessions(tmp_path, SESSION_ID)
-
-    assert result == {agent_id: new_style}
-
-
 def test_session_dir_files_are_collected_recursively_and_sorted(tmp_path):
     sess = tmp_path / SESSION_ID
     (sess / "subagents").mkdir(parents=True)

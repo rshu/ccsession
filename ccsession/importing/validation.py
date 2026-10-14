@@ -45,17 +45,19 @@ def validate_manifest(export_path: Path) -> dict:
             "The export may be corrupted or manually modified."
         )
 
-    # Exports from ccsession 2.0.0 predate layout_version; treat them as layout 1.
-    layout_version = manifest.get('layout_version', 1)
-    if not isinstance(layout_version, int) or layout_version < 1:
-        raise ImportError(f"Manifest has an invalid layout_version: {layout_version!r}")
+    layout_version = manifest.get('layout_version')
+    if not isinstance(layout_version, int) or layout_version < MANIFEST_LAYOUT_VERSION:
+        raise ImportError(
+            f"This export uses layout_version {layout_version!r}, older than the Claude Code 2.1 "
+            f"layout this ccsession writes ({MANIFEST_LAYOUT_VERSION}).\n"
+            "Re-export the session with the current ccsession."
+        )
     if layout_version > MANIFEST_LAYOUT_VERSION:
         raise ImportError(
             f"This export uses layout_version {layout_version}, newer than this ccsession "
             f"understands ({MANIFEST_LAYOUT_VERSION}).\n"
             "Upgrade ccsession: pip install --upgrade ccsession-cli"
         )
-    manifest['layout_version'] = layout_version
 
     return manifest
 

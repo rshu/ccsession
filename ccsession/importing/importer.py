@@ -8,7 +8,7 @@ from ccsession.importing.uuids import generate_new_session_id
 from ccsession.importing.remap import build_remap_plan, most_common_cwd, remap_records
 from ccsession.importing.snapshot import create_snapshot
 from ccsession.importing.session_io import read_session_jsonl, write_session_file
-from ccsession.importing.auxiliary import import_file_history, import_todos, import_plan
+from ccsession.importing.auxiliary import import_file_history
 from ccsession.importing.session_dir import import_session_dir, import_history
 from ccsession.importing.config import import_config, add_claude_md_note
 from ccsession.importing.import_log import log_import
@@ -26,7 +26,7 @@ def import_session(export_path: Path, project_path: Path | None = None,
         project_path: Target project path (default: current directory)
         preserve_session_id: Keep original session ID
         skip_config: Don't import config files
-        skip_auxiliary: Don't import file-history/todos/plan
+        skip_auxiliary: Don't import file history or prompt history
         non_interactive: No prompts
 
     Returns:
@@ -99,18 +99,15 @@ def import_session(export_path: Path, project_path: Path | None = None,
     # 5. Process session
     print("\n\U0001f4dd Processing session...")
 
-    # Find session file - prefer session/main.jsonl, fallback to raw_messages.jsonl
+    # Main transcript
     session_data = manifest.get('session_data', {})
     main_session_path = session_data.get('main_session')
 
-    source_session_path = None
-    if main_session_path:
-        source_session_path = resolve_export_path(export_path, main_session_path)
-    if not source_session_path or not source_session_path.exists():
-        source_session_path = export_path / 'raw_messages.jsonl'
-
-    if not source_session_path.exists():
-        raise FileNotFoundError(f"Session file not found in export: {export_path}")
+    if not main_session_path:
+        raise ImportError("Manifest does not name a main_session transcript.")
+    source_session_path = resolve_export_path(export_path, main_session_path)
+    if not source_session_path.is_file():
+        raise FileNotFoundError(f"Session file not found in export: {source_session_path}")
 
     messages = read_session_jsonl(source_session_path)
     print(f"   Read {len(messages)} messages")
@@ -149,8 +146,6 @@ def import_session(export_path: Path, project_path: Path | None = None,
         'agent_sessions': dir_result.agents,
         'history_lines': 0,
         'file_history_count': 0,
-        'todos_imported': False,
-        'plan_imported': False,
         'config': {}
     }
 
@@ -161,16 +156,6 @@ def import_session(export_path: Path, project_path: Path | None = None,
         fh_count = import_file_history(export_path, manifest, new_session_id)
         summary['file_history_count'] = fh_count
         print(f"   \u2713 File history: {fh_count} snapshots")
-
-        # Todos
-        todos_imported = import_todos(export_path, manifest, new_session_id)
-        summary['todos_imported'] = todos_imported > 0
-        print(f"   \u2713 Todos: {'imported' if todos_imported else 'none'}")
-
-        # Plan
-        plan_imported = import_plan(export_path, manifest)
-        summary['plan_imported'] = plan_imported
-        print(f"   \u2713 Plan: {'imported' if plan_imported else 'skipped/none'}")
 
         # Prompt history
         history_lines = import_history(export_path, manifest, plan, project_path)
