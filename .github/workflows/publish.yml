@@ -24,7 +24,7 @@ jobs:
         run: |
           version=$(python -c "import ccsession; print(ccsession.CCSESSION_VERSION)")
           [ "v$version" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != v$version" >&2; exit 1; }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
