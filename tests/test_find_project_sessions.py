@@ -4,12 +4,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ccsession.export.session_discovery import find_project_sessions, find_session_by_id
+from ccsession.paths import get_normalized_project_dir
 
 
 def test_find_project_sessions_handles_dot_in_project_path(tmp_path, monkeypatch):
     """Claude replaces dots with dashes in project directory names."""
     fake_home = tmp_path / "home"
-    claude_dir = fake_home / ".claude" / "projects" / "-mnt-c-project-git"
+    claude_dir = fake_home / ".claude" / "projects" / get_normalized_project_dir("/mnt/c/project.git")
     claude_dir.mkdir(parents=True)
 
     session_file = claude_dir / "session123.jsonl"
@@ -26,7 +27,7 @@ def test_find_project_sessions_handles_underscore_in_project_path(tmp_path, monk
     """Claude replaces underscores with dashes in project directory names."""
     fake_home = tmp_path / "home"
     # Underscore in path should become hyphen: ccsession_test -> ccsession-test
-    claude_dir = fake_home / ".claude" / "projects" / "-mnt-c-python-ccsession-test"
+    claude_dir = fake_home / ".claude" / "projects" / get_normalized_project_dir("/mnt/c/python/ccsession_test")
     claude_dir.mkdir(parents=True)
 
     session_file = claude_dir / "session456.jsonl"
@@ -44,7 +45,7 @@ def test_find_project_sessions_handles_multiple_special_chars(tmp_path, monkeypa
     """Claude replaces dots, underscores, and path separators with dashes."""
     fake_home = tmp_path / "home"
     # Path with dot, underscore, and separators: my_project.v2 -> my-project-v2
-    claude_dir = fake_home / ".claude" / "projects" / "-mnt-c-my-project-v2"
+    claude_dir = fake_home / ".claude" / "projects" / get_normalized_project_dir("/mnt/c/my_project.v2")
     claude_dir.mkdir(parents=True)
 
     session_file = claude_dir / "session789.jsonl"
