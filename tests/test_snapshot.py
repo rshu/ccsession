@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 from unittest.mock import patch
 
 from ccsession.importing.import_log import log_import
@@ -192,3 +195,27 @@ def test_a_failed_swap_puts_the_previous_snapshot_back(tmp_path, monkeypatch):
 
     assert sorted(p.name for p in storage.iterdir()) == ["pre-import-snapshot"]
     assert (previous / "snapshot_info.json").read_text(encoding="utf-8").startswith('{"timestamp": "2026-01-01')
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
+def test_the_snapshot_is_private(tmp_path, monkeypatch):
+    """The journal and snapshot_info.json hold copies of prompt-history lines, which
+    Claude Code keeps 0600; the import storage must not widen that."""
+    import stat
+    from ccsession.importing.snapshot import ImportJournal
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    storage = tmp_path / ".claude-session-imports"
+    snapshot_dir = create_snapshot(tmp_path / ".claude" / "projects" / "-p", storage,
+                                   project_path=tmp_path / "proj", new_session_id=SID)
+    ImportJournal(snapshot_dir).record("history_line", line='{"display": "secret"}')
+    record_import_artifacts(snapshot_dir, appended_history_lines=['{"display": "secret"}'])
+    log_path = log_import(storage, {"session_id": "old", "export_name": "e"}, "n", tmp_path / "n.jsonl", {})
+
+    def mode(p):
+        return stat.S_IMODE(p.stat().st_mode)
+
+    assert mode(storage) == 0o700 and mode(snapshot_dir) == 0o700
+    assert mode(snapshot_dir / "journal.jsonl") == 0o600
+    assert mode(snapshot_dir / "snapshot_info.json") == 0o600
+    assert mode(log_path.parent) == 0o700 and mode(log_path) == 0o600
+    assert mode(storage / "index.json") == 0o600

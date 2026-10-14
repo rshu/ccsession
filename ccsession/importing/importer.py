@@ -20,6 +20,7 @@ from ccsession.importing.config import (
 )
 from ccsession.importing.import_log import log_import
 from ccsession.output import error, info, success, warn
+from ccsession.utils import ensure_private_dir
 
 _CONFIG_TYPE_NAMES = ('commands', 'skills', 'hooks', 'agents', 'rules')
 
@@ -160,8 +161,7 @@ def import_session(export_path: Path, project_path: Path | None = None,
     config_plan = None if skip_config else plan_config_import(export_path, manifest, project_path)
 
     # 5. Create pre-import snapshot (nothing above has written anything)
-    import_storage_dir = get_import_storage_dir()
-    import_storage_dir.mkdir(parents=True, exist_ok=True)
+    import_storage_dir = ensure_private_dir(get_import_storage_dir())
 
     info("\n\U0001f4f8 Creating pre-import snapshot...")
     snapshot_path = create_snapshot(target_dir, import_storage_dir,

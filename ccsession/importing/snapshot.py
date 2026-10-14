@@ -7,7 +7,9 @@ import shutil
 from pathlib import Path
 
 from ccsession.paths import get_claude_dir, get_file_history_dir, get_history_file
-from ccsession.utils import force_rmtree, json_line, read_json, utc_now_iso, write_json
+from ccsession.utils import (
+    ensure_private_dir, force_rmtree, json_line, open_private, read_json, utc_now_iso, write_json,
+)
 
 SNAPSHOT_VERSION = 2
 SNAPSHOT_DIR_NAME = 'pre-import-snapshot'
@@ -35,8 +37,10 @@ class ImportJournal:
 
     def record(self, kind: str, **fields) -> None:
         line = json_line({'kind': kind, **fields})
-        with open(self.path, 'a', encoding='utf-8', newline='') as f:
-            f.write(line + '\n')
+        # Owner-only: entries can hold copies of prompt-history lines (Claude Code keeps those 0600)
+        fd = open_private(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+        with os.fdopen(fd, 'wb') as f:
+            f.write(line.encode('utf-8') + b'\n')
             f.flush()
             os.fsync(f.fileno())
 
@@ -99,7 +103,7 @@ def create_snapshot(target_dir: Path, import_storage_dir: Path, *,
     Returns:
         Path: the snapshot directory
     """
-    import_storage_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(import_storage_dir)
     recover_snapshot_slot(import_storage_dir)
     snapshot_dir = import_storage_dir / SNAPSHOT_DIR_NAME
     if (snapshot_dir / RESTORE_MARKER).exists():
@@ -113,7 +117,8 @@ def create_snapshot(target_dir: Path, import_storage_dir: Path, *,
     building = import_storage_dir / f'{SNAPSHOT_DIR_NAME}.tmp-{os.getpid()}'
     force_rmtree(building, ignore_errors=True)
     try:
-        building.mkdir()
+        building.mkdir(mode=0o700)
+        ensure_private_dir(building)
         _fill_snapshot(building, target_dir, project_path=project_path, new_session_id=new_session_id,
                        export_name=export_name, export_path=export_path)
     except BaseException:
@@ -173,8 +178,8 @@ def _fill_snapshot(snapshot_dir: Path, target_dir: Path, *, project_path, new_se
     }
     for field in _LIST_ARTIFACTS:
         info[field] = []
-    (snapshot_dir / JOURNAL_FILE_NAME).touch()
-    write_json(snapshot_dir / INFO_FILE_NAME, info)
+    os.close(open_private(snapshot_dir / JOURNAL_FILE_NAME, os.O_WRONLY | os.O_CREAT))
+    write_json(snapshot_dir / INFO_FILE_NAME, info, private=True)
 
 
 def record_import_artifacts(snapshot_dir: Path, *, created_config_files: list | None = None,
@@ -198,4 +203,4 @@ def record_import_artifacts(snapshot_dir: Path, *, created_config_files: list | 
             info[field] = [str(v) for v in value]
     if claude_md_note is not None:
         info['claude_md_note'] = claude_md_note
-    write_json(info_path, info)
+    write_json(info_path, info, private=True)

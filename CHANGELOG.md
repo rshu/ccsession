@@ -149,6 +149,9 @@ Exports keep `layout_version` 2; exports written by 2.1.0 still import.
   the import's output, so a run that fails at any point still removes its sessions,
   file history and prompt-history lines, also under `CLAUDE_CODE_PROJECT_DIR_NAME`.
 - Tests clear `CLAUDE_CODE_PROJECT_DIR_NAME` as well as `CLAUDE_CONFIG_DIR`.
+- The import storage (snapshot, its journal, import logs and index) is owner-only
+  (directories 0700, files 0600): the journal and snapshot hold copies of prompt-history
+  lines, which Claude Code keeps private.
 
 ## 2.1.0 — 2026-10-14
 

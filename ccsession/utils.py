@@ -111,18 +111,46 @@ def read_json(path: Path) -> dict:
         return json.load(f)
 
 
-def write_json(path: Path, data, indent: int = 2) -> None:
+def ensure_private_dir(path) -> Path:
+    """Create ``path`` (and parents) and make it owner-only (0700 on POSIX)."""
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    if os.name != 'nt':
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            pass
+    return path
+
+
+def open_private(path, flags: int):
+    """``os.open`` a file with owner-only permissions (0600), whatever the umask."""
+    fd = os.open(path, flags | getattr(os, 'O_BINARY', 0), 0o600)
+    if os.name != 'nt':
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
+    return fd
+
+
+def write_json(path: Path, data, indent: int = 2, *, private: bool = False) -> None:
     """Write data as JSON with UTF-8 encoding, creating parent directories.
 
     The file is written to a sibling temporary file and moved into place, so a
     failure part-way (disk full, unserialisable value, interrupt) leaves the
-    previous content intact instead of a truncated document.
+    previous content intact instead of a truncated document. ``private`` makes
+    the file owner-only (0600).
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f'.{path.name}.tmp-{os.getpid()}')
     try:
-        with open(tmp, 'w', encoding='utf-8') as f:
+        if private:
+            f = os.fdopen(open_private(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC), 'w', encoding='utf-8')
+        else:
+            f = open(tmp, 'w', encoding='utf-8')
+        with f:
             json.dump(data, f, indent=indent)
         os.replace(tmp, path)
     except BaseException:

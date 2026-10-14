@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ccsession.output import warn
-from ccsession.utils import utc_now_iso, read_json, write_json
+from ccsession.utils import ensure_private_dir, utc_now_iso, read_json, write_json
 
 
 def _claim_log_dir(import_storage_dir: Path, existing_keys, base: str) -> Path:
@@ -16,8 +16,8 @@ def _claim_log_dir(import_storage_dir: Path, existing_keys, base: str) -> Path:
     while True:
         if key not in existing_keys:
             try:
-                (import_storage_dir / key).mkdir(exist_ok=False)
-                return import_storage_dir / key
+                (import_storage_dir / key).mkdir(mode=0o700, exist_ok=False)
+                return ensure_private_dir(import_storage_dir / key)
             except FileExistsError:
                 pass
         key = f'{base}-{n}'
@@ -60,7 +60,7 @@ def log_import(import_storage_dir: Path, manifest: dict, new_session_id: str,
     Returns:
         Path: Path to the import log
     """
-    import_storage_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(import_storage_dir)
     base = datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M%S')
     index = _read_index(import_storage_dir, base)
 
@@ -77,7 +77,7 @@ def log_import(import_storage_dir: Path, manifest: dict, new_session_id: str,
     }
 
     log_path = log_dir / 'import.log'
-    write_json(log_path, log_content)
+    write_json(log_path, log_content, private=True)
 
     index['imports'][key] = {
         'session_name': manifest.get('export_name'),
@@ -86,6 +86,6 @@ def log_import(import_storage_dir: Path, manifest: dict, new_session_id: str,
     }
     index['last_snapshot_taken'] = utc_now_iso()
 
-    write_json(import_storage_dir / 'index.json', index)
+    write_json(import_storage_dir / 'index.json', index, private=True)
 
     return log_path
