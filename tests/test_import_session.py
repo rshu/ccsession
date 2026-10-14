@@ -1,12 +1,15 @@
 import sys
 import json
 from pathlib import Path
+import subprocess
+from unittest.mock import patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ccsession.paths import get_normalized_project_dir, get_projects_dir
-from ccsession.importing.validation import validate_manifest
+from ccsession.importing.validation import validate_manifest, check_version_compatibility
+from ccsession.importing.importer import import_session
 from ccsession.importing.uuids import generate_new_session_id, generate_new_agent_id, regenerate_message_uuids
 from ccsession.importing.session_io import read_session_jsonl, write_session_file
 
@@ -308,3 +311,67 @@ def test_full_uuid_regeneration_preserves_protected_fields():
     assert result[0]["requestId"] == "req_01REQUEST_ID"
     assert result[0]["message"]["content"][0]["signature"] == "CRYPTO_SIG"
     assert result[0]["message"]["content"][1]["id"] == "toolu_01TOOL_ID"
+
+
+# =============================================================================
+# Claude Code Version Check Tests
+# =============================================================================
+
+def _claude_version_output(stdout):
+    """Stand in for running `claude --version`, which prints e.g. '2.1.287 (Claude Code)'."""
+    completed = subprocess.CompletedProcess(args=["claude", "--version"], returncode=0,
+                                            stdout=stdout, stderr="")
+    return patch("ccsession.importing.validation.subprocess.run", return_value=completed)
+
+
+def test_check_version_compatibility_same_version_gives_no_warning():
+    with _claude_version_output("2.1.287 (Claude Code)\n"):
+        _, warning = check_version_compatibility({"claude_code_version": "2.1.287"})
+
+    assert warning is None
+
+
+def test_check_version_compatibility_mismatch_names_both_versions():
+    with _claude_version_output("2.1.287 (Claude Code)\n"):
+        _, warning = check_version_compatibility({"claude_code_version": "2.0.14"})
+
+    assert "2.0.14" in warning
+    assert "2.1.287" in warning
+
+
+def test_check_version_compatibility_unparseable_output_is_reported_as_unknown():
+    with _claude_version_output("something unexpected\n"):
+        _, warning = check_version_compatibility({"claude_code_version": "2.1.287"})
+
+    assert "Could not determine" in warning
+
+
+# =============================================================================
+# Import Conflict Tests
+# =============================================================================
+
+def test_import_with_preserved_id_conflict_names_the_existing_file(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+
+    session_id = "deadbeef-0000-0000-0000-000000000000"
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / ".ccsession-manifest.json").write_text(json.dumps({
+        "ccsession_version": "2.0.0",
+        "session_id": session_id,
+        "session_data": {"main_session": "session/main.jsonl"},
+    }), encoding="utf-8")
+    existing = get_projects_dir(project) / f"{session_id}.jsonl"
+    existing.parent.mkdir(parents=True)
+    existing.write_text("{}\n", encoding="utf-8")
+
+    with patch("ccsession.importing.importer.check_version_compatibility", return_value=(True, None)):
+        with pytest.raises(FileExistsError) as excinfo:
+            import_session(export_dir, project_path=project,
+                           preserve_session_id=True, non_interactive=True)
+
+    assert str(existing) in str(excinfo.value)

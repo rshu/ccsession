@@ -69,7 +69,7 @@ def import_session(export_path: Path, project_path: Path | None = None,
                 f"Session ID {new_session_id} already exists locally.\n"
                 "Import aborted. Options:\n"
                 "  - Use default import (generates new session ID)\n"
-                "  - Manually delete existing session at {target_session_path}"
+                f"  - Manually delete existing session at {target_session_path}"
             )
     else:
         new_session_id = generate_new_session_id()

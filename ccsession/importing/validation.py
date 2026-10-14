@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -57,8 +58,8 @@ def check_version_compatibility(manifest: dict) -> tuple:
     # Get current Claude Code version
     try:
         result = subprocess.run(['claude', '--version'], capture_output=True, text=True)
-        current_version = result.stdout.strip().split()[-1] if result.returncode == 0 else None
-    except (subprocess.SubprocessError, OSError, IndexError):
+        current_version = _parse_version(result.stdout) if result.returncode == 0 else None
+    except (subprocess.SubprocessError, OSError):
         current_version = None
 
     export_version = manifest.get('claude_code_version')
@@ -78,3 +79,16 @@ def check_version_compatibility(manifest: dict) -> tuple:
         )
 
     return True, None
+
+
+_VERSION_RE = re.compile(r'\d+\.\d+\.\d+(?:[-+][\w.-]+)?')
+
+
+def _parse_version(output: str) -> str | None:
+    """Extract a semantic version from `claude --version` output.
+
+    The CLI prints e.g. "2.1.287 (Claude Code)"; only the version token is wanted.
+    Returns None when no version-looking token is present.
+    """
+    match = _VERSION_RE.search(output)
+    return match.group(0) if match else None

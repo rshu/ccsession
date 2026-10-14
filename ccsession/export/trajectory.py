@@ -203,17 +203,26 @@ def _compute_statistics(turns: list[dict]) -> dict:
 
 
 def _find_spawning_tool_call_id(main_messages: list[dict], agent_id: str) -> str | None:
-    """Find the tool_call ID of the Agent tool_use that spawned a sub-agent."""
+    """Find the tool_call ID of the Agent tool_use that spawned a sub-agent.
+
+    The link is recorded on the user message that carries the Agent call's result:
+    its toolUseResult.agentId names the sub-agent, and the tool_result block in
+    its content names the call via tool_use_id. Returns None when no result in
+    the transcript mentions agent_id.
+    """
     for msg in main_messages:
-        if 'message' not in msg:
+        tool_use_result = msg.get('toolUseResult')
+        if not isinstance(tool_use_result, dict) or tool_use_result.get('agentId') != agent_id:
             continue
-        message = msg['message']
-        if message.get('role') != 'assistant':
+        message = msg.get('message')
+        if not isinstance(message, dict):
             continue
-        for block in message.get('content', []):
-            if (isinstance(block, dict) and block.get('type') == 'tool_use'
-                    and block.get('name') == 'Agent'):
-                return block.get('id')
+        content = message.get('content', [])
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get('type') == 'tool_result':
+                return block.get('tool_use_id')
     return None
 
 

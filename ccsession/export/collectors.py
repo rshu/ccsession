@@ -3,70 +3,73 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ccsession.constants import AGENT_ID_LENGTH
 from ccsession.paths import (
     get_file_history_dir, get_plans_dir, get_todos_dir, get_session_env_dir,
 )
 
 
-def collect_agent_sessions(claude_project_dir: Path, session_id: str, messages: list[dict]) -> dict[str, Path]:
-    """Collect all agent session files related to the main session.
+def collect_agent_sessions(claude_project_dir: Path, session_id: str) -> dict[str, Path]:
+    """Collect all sub-agent transcript files belonging to a session.
+
+    Two on-disk layouts exist:
+      1. Per-session (current): <project-dir>/<session-id>/subagents/agent-*.jsonl
+         Every file in this folder belongs to the session by construction.
+      2. Legacy flat: <project-dir>/agent-*.jsonl, shared by all sessions of the
+         project; a file belongs to the session if its first line's sessionId matches.
+
+    Files are deliberately not required to be referenced from the main transcript:
+    background and async agents often leave no agentId there, yet their transcripts
+    still exist on disk and must be exported.
 
     Args:
         claude_project_dir: The ~/.claude/projects/<normalized>/ directory
         session_id: The session UUID
-        messages: Parsed JSONL messages from the main session
 
-    Returns dict with agent_id -> file_path mapping.
+    Returns dict with agent_id -> file_path mapping. Per-session files take precedence.
     """
-    agents = {}
-
-    # Find agent IDs referenced in the main session
-    # agentId is stored in toolUseResult (the result of Agent tool calls)
-    agent_ids = set()
-    for msg in messages:
-        tool_result = msg.get('toolUseResult')
-        if isinstance(tool_result, dict) and 'agentId' in tool_result:
-            agent_id = tool_result['agentId']
-            if agent_id and len(agent_id) == AGENT_ID_LENGTH:
-                agent_ids.add(agent_id)
+    agents: dict[str, Path] = {}
 
     if not claude_project_dir.exists():
         return agents
 
-    # Search both locations for agent session files:
-    # 1. New-style: <project-dir>/<session-id>/subagents/agent-*.jsonl
-    # 2. Old-style: <project-dir>/agent-*.jsonl
-    search_dirs = [
-        claude_project_dir / session_id / 'subagents',
-        claude_project_dir,
-    ]
+    for agent_file in _iter_agent_files(claude_project_dir / session_id / 'subagents'):
+        agents.setdefault(_agent_id_from_path(agent_file), agent_file)
 
-    for search_dir in search_dirs:
-        if not search_dir.exists():
+    for agent_file in _iter_agent_files(claude_project_dir):
+        agent_id = _agent_id_from_path(agent_file)
+        if agent_id in agents:
             continue
-        for agent_file in search_dir.glob('agent-*.jsonl'):
-            agent_id = agent_file.stem.replace('agent-', '')
-            # Strip compact prefix if present (agent-acompact-<id>)
-            if agent_id.startswith('compact-'):
-                continue
-            # Check if this agent is referenced in our session
-            if agent_id in agent_ids:
-                # Avoid duplicates (new-style takes precedence)
-                if agent_id in agents:
-                    continue
-                # Verify session ID matches by checking first line
-                try:
-                    with open(agent_file, 'r', encoding='utf-8') as f:
-                        first_line = f.readline()
-                        if first_line:
-                            data = json.loads(first_line)
-                            if data.get('sessionId') == session_id:
-                                agents[agent_id] = agent_file
-                except (json.JSONDecodeError, KeyError, OSError):
-                    pass
+        if _first_line_session_id(agent_file) == session_id:
+            agents[agent_id] = agent_file
 
     return agents
+
+
+def _iter_agent_files(directory: Path):
+    """Yield agent-*.jsonl transcripts in a directory, skipping compaction snapshots."""
+    if not directory.exists():
+        return
+    for agent_file in sorted(directory.glob('agent-*.jsonl')):
+        if _agent_id_from_path(agent_file).startswith('compact-'):
+            continue
+        yield agent_file
+
+
+def _agent_id_from_path(agent_file: Path) -> str:
+    return agent_file.stem[len('agent-'):]
+
+
+def _first_line_session_id(agent_file: Path) -> str | None:
+    """Return the sessionId recorded on the first line of a transcript, if readable."""
+    try:
+        with open(agent_file, 'r', encoding='utf-8') as f:
+            first_line = f.readline()
+        if not first_line:
+            return None
+        data = json.loads(first_line)
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data.get('sessionId') if isinstance(data, dict) else None
 
 
 def collect_tool_results(claude_project_dir: Path, session_id: str) -> list[Path]:

@@ -16,7 +16,7 @@ def get_parent_claude_pid() -> int | None:
         # Get parent PID of current process
         ppid = os.getppid()
         # Check if parent is a claude process
-        result = subprocess.run(['ps', '-p', str(ppid), '-o', 'cmd='],
+        result = subprocess.run(['ps', '-p', str(ppid), '-o', 'args='],
                               capture_output=True, text=True)
         if 'claude' in result.stdout:
             return ppid

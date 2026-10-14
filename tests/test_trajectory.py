@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -465,3 +466,94 @@ class TestFormatTrajectory:
         assert result["trajectory"][0]["event_type"] == "system"
         assert result["trajectory"][1]["role"] == "user"
         assert result["statistics"]["events"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Sub-agent linking
+# ---------------------------------------------------------------------------
+
+def _agent_result_msg(tool_use_id, agent_id, uuid):
+    """The user turn Claude Code writes when an Agent tool call returns."""
+    return {
+        "uuid": uuid,
+        "parentUuid": "a1",
+        "isSidechain": False,
+        "userType": "external",
+        "cwd": "/home/user/project",
+        "sessionId": "sess-1",
+        "timestamp": "2026-03-02T10:00:20Z",
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": [{"type": "text", "text": "agent finished"}],
+            }],
+        },
+        "toolUseResult": {
+            "agentId": agent_id,
+            "canReadOutputFile": True,
+            "description": "subtask",
+            "isAsync": False,
+            "outputFile": f"/tmp/{agent_id}.txt",
+            "prompt": "do the subtask",
+            "resolvedModel": "claude-sonnet-4-20250514",
+            "status": "completed",
+        },
+    }
+
+
+class TestSubAgentLinking:
+    METADATA = {
+        "session_id": "sess-1",
+        "start_time": "2026-03-02T10:00:00Z",
+        "end_time": "2026-03-02T10:05:00Z",
+        "project_dir": "/home/user/project",
+        "total_messages": 4,
+        "user_messages": 3,
+        "assistant_messages": 1,
+        "tool_uses": 2,
+        "models_used": ["claude-sonnet-4-20250514"],
+    }
+    MSG_META = {"version": "2.1.287", "git_branch": "main", "slug": "test-session"}
+
+    def _agent_files(self, tmp_path, *agent_ids):
+        files = {}
+        for agent_id in agent_ids:
+            path = tmp_path / f"agent-{agent_id}.jsonl"
+            path.write_text(json.dumps(_user_msg("subtask", uuid=f"sub-{agent_id}")) + "\n",
+                            encoding="utf-8")
+            files[agent_id] = path
+        return files
+
+    def test_each_sub_agent_links_to_its_own_spawning_tool_call(self, tmp_path):
+        agent_a, agent_b = "aaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbb"
+        messages = [
+            _user_msg("Do two things"),
+            _assistant_msg("Spawning", tool_calls=[
+                {"type": "tool_use", "id": "toolu_A", "name": "Agent", "input": {"prompt": "first"}},
+                {"type": "tool_use", "id": "toolu_B", "name": "Agent", "input": {"prompt": "second"}},
+            ]),
+            _agent_result_msg("toolu_A", agent_a, uuid="r1"),
+            _agent_result_msg("toolu_B", agent_b, uuid="r2"),
+        ]
+
+        result = format_trajectory(messages, self.METADATA, self.MSG_META,
+                                   agent_sessions=self._agent_files(tmp_path, agent_a, agent_b))
+
+        links = {a["agent_id"]: a["spawned_by_tool_call_id"] for a in result["sub_agents"]}
+        assert links == {agent_a: "toolu_A", agent_b: "toolu_B"}
+
+    def test_sub_agent_with_no_recorded_result_has_no_spawn_link(self, tmp_path):
+        messages = [
+            _user_msg("Go"),
+            _assistant_msg("Spawning", tool_calls=[
+                {"type": "tool_use", "id": "toolu_A", "name": "Agent", "input": {"prompt": "first"}},
+            ]),
+        ]
+
+        result = format_trajectory(messages, self.METADATA, self.MSG_META,
+                                   agent_sessions=self._agent_files(tmp_path, "ccccccccccccccccc"))
+
+        assert result["sub_agents"][0]["spawned_by_tool_call_id"] is None

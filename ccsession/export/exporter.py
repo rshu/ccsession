@@ -165,7 +165,7 @@ def export_session(session_info: dict, project_path: str | Path,
     # (e.g., ~/.claude/projects/-home-rshu-ccsession/)
     claude_project_dir = session_info['path'].parent
 
-    agent_sessions = collect_agent_sessions(claude_project_dir, session_id, messages)
+    agent_sessions = collect_agent_sessions(claude_project_dir, session_id)
     file_history = collect_file_history(session_id)
     plan_file = collect_plan_file(slug)
     todos = collect_todos(session_id)
