@@ -339,11 +339,11 @@ def test_import_restores_agents_history_and_rewrites_every_reference(tmp_path, m
     user_result = [r for r in main if r.get("toolUseResult")][0]
     assert user_result["sourceToolAssistantUUID"] in uuids
     assert all(r["sessionId"] == new_sid for r in main) and all(r.get("cwd", str(project)) == str(project) for r in main)
-    new_agent = user_result["toolUseResult"]["agentId"]
-    assert new_agent != agent_id
+    # Agent ids are deliberately stable: Claude Code matches them against task-id tags in message text
+    assert user_result["toolUseResult"]["agentId"] == agent_id
     session_dir = get_projects_dir(project) / new_sid
-    assert (session_dir / "subagents" / f"agent-{new_agent}.jsonl").is_file()
-    assert (session_dir / "subagents" / f"agent-{new_agent}.meta.json").is_file()
+    assert (session_dir / "subagents" / f"agent-{agent_id}.jsonl").is_file()
+    assert (session_dir / "subagents" / f"agent-{agent_id}.meta.json").is_file()
     assert summary["agent_sessions"] == 1 and summary["session_dir_files"] == 2 and summary["history_lines"] == 1
     history = [json.loads(l) for l in (tmp_path / ".claude" / "history.jsonl").read_text(encoding="utf-8").splitlines()]
     assert history[0]["sessionId"] == new_sid and history[0]["project"] == str(project)

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +11,6 @@ from ccsession.importing.remap import RemapPlan, remap_record, remap_records
 from ccsession.importing.session_io import read_session_jsonl
 from ccsession.paths import get_history_file
 
-_AGENT_FILE_RE = re.compile(r'^agent-(?P<agent_id>[0-9a-f]+)(?P<suffix>\.jsonl|\.meta\.json)$')
 _EMPTY_MARKER = '_empty'
 
 
@@ -29,9 +27,10 @@ def import_session_dir(export_path: Path, manifest: dict, target_session_dir: Pa
     """Restore ``<project-dir>/<session-id>/`` from an export.
 
     Layout 2 exports carry a verbatim mirror under ``session/session-dir/``; layout 1
-    exports only carry sub-agent transcripts under ``session/agents/``. Sub-agent
-    transcripts and their ``.meta.json`` sidecars are rewritten through ``plan`` and
-    renamed to the agent's new id; every other file is copied as is.
+    exports only carry sub-agent transcripts under ``session/agents/``. Every
+    ``.jsonl`` under ``subagents/`` is a transcript and every ``.json`` there a
+    sidecar: both are rewritten through ``plan`` (file names, which carry the agent
+    id, never change). Every other file is copied as is.
 
     Raises:
         FileExistsError: if ``target_session_dir`` already contains files.
@@ -47,19 +46,14 @@ def import_session_dir(export_path: Path, manifest: dict, target_session_dir: Pa
 
     files = agents = 0
     for source, relative in sources:
-        match = _AGENT_FILE_RE.match(source.name)
-        if match and relative.parent.name == 'subagents':
-            new_id = plan.agent_map.get(match['agent_id'], match['agent_id'])
-            target = target_session_dir / relative.parent / f"agent-{new_id}{match['suffix']}"
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if match['suffix'] == '.jsonl':
-                _write_jsonl(remap_records(read_session_jsonl(source), plan), target)
-                agents += 1
-            else:
-                _write_json(remap_record(_read_json(source), plan), target)
+        target = target_session_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if relative.parent.name == 'subagents' and source.suffix == '.jsonl':
+            _write_jsonl(remap_records(read_session_jsonl(source), plan), target)
+            agents += 1
+        elif relative.parent.name == 'subagents' and source.suffix == '.json':
+            _write_json(remap_record(_read_json(source), plan), target)
         else:
-            target = target_session_dir / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
         files += 1
     return SessionDirImport(files=files, agents=agents)

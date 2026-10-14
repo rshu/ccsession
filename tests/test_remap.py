@@ -15,8 +15,8 @@ NEW_FILE_HISTORY = f"/home/new/.claude/file-history/{NEW_SID}"
 AGENT = "a9ba8b4d8b37efc78"
 
 
-def _plan(uuid_map=None, agent_map=None, old_project=OLD_PROJECT):
-    """A plan with explicit id maps; path rules come from build_remap_plan so they stay in sync."""
+def _plan(uuid_map=None, old_project=OLD_PROJECT):
+    """A plan with an explicit uuid map; path rules come from build_remap_plan so they stay in sync."""
     rules = build_remap_plan(
         main_records=[], agent_records_by_id={},
         old_session_id=OLD_SID, new_session_id=NEW_SID,
@@ -24,8 +24,7 @@ def _plan(uuid_map=None, agent_map=None, old_project=OLD_PROJECT):
         new_session_dir=Path(NEW_SESSION_DIR), new_file_history_dir=Path(NEW_FILE_HISTORY),
         regenerate_ids=False,
     ).path_rules
-    return RemapPlan(old_session_id=OLD_SID, new_session_id=NEW_SID,
-                     uuid_map=uuid_map or {}, agent_map=agent_map or {}, path_rules=rules)
+    return RemapPlan(old_session_id=OLD_SID, new_session_id=NEW_SID, uuid_map=uuid_map or {}, path_rules=rules)
 
 
 def test_uuid_references_are_rewritten_consistently_across_every_field():
@@ -39,7 +38,9 @@ def test_uuid_references_are_rewritten_consistently_across_every_field():
         {"type": "file-history-delta", "messageId": "u3", "snapshotMessageId": "u1"},
         {"type": "queue-operation", "operation": "dequeue", "sessionId": OLD_SID, "commandUuid": "u2"},
         {"type": "system", "subtype": "compact_boundary", "uuid": "u2", "logicalParentUuid": "u1",
-         "foldedUuids": ["u1", "u3"], "compactMetadata": {"preservedSegment": {"headUuid": "u1", "anchorUuid": "u3"}}},
+         "foldedUuids": ["u1", "u3"], "compactMetadata": {"preservedSegment": {"headUuid": "u1", "anchorUuid": "u3"},
+                                                           "preservedMessages": {"uuids": ["u1", "u2"], "count": 2}}},
+        {"type": "attachment", "uuid": "u3", "attachment": {"type": "queued_command", "origin": {"from": "u1"}}},
     ]
 
     out = remap_records(records, plan)
@@ -53,6 +54,8 @@ def test_uuid_references_are_rewritten_consistently_across_every_field():
     assert out[6]["commandUuid"] == "n2"
     assert out[7]["logicalParentUuid"] == "n1" and out[7]["foldedUuids"] == ["n1", "n3"]
     assert out[7]["compactMetadata"]["preservedSegment"] == {"headUuid": "n1", "anchorUuid": "n3"}
+    assert out[7]["compactMetadata"]["preservedMessages"] == {"uuids": ["n1", "n2"], "count": 2}
+    assert out[8]["attachment"]["origin"]["from"] == "n1", "references are rewritten by value, whatever the key"
     assert records[1]["parentUuid"] == "u1", "input must not be mutated"
 
 
@@ -74,18 +77,23 @@ def test_session_id_is_rewritten_only_when_it_names_the_old_session():
     assert remap_record(same, plan)["session_id"] == NEW_SID
 
 
-def test_agent_ids_are_rewritten_in_tool_results_records_and_meta():
-    plan = _plan(agent_map={AGENT: "bbbbbbbbbbbbbbbbb", "c0c0c0c0c0c0c0c0c": "ddddddddddddddddd"})
-    main = {"type": "user", "sessionId": OLD_SID,
-            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "done"}]},
-            "toolUseResult": {"agentId": AGENT, "status": "completed", "prompt": "find it"}}
+def test_agent_ids_are_never_rewritten():
+    """Claude Code matches toolUseResult.agentId against <task-id> tags inside message text
+    (which import never touches) to decide whether a background agent finished; renaming the
+    agent would make every finished background agent look orphaned on resume."""
+    plan = build_remap_plan(main_records=[{"uuid": "u1"}], agent_records_by_id={AGENT: [{"uuid": "s1", "agentId": AGENT}]},
+                            old_session_id=OLD_SID, new_session_id=NEW_SID,
+                            old_project_path=OLD_PROJECT, new_project_path=NEW_PROJECT,
+                            new_session_dir=Path(NEW_SESSION_DIR), new_file_history_dir=Path(NEW_FILE_HISTORY),
+                            regenerate_ids=True)
+    main = {"type": "user", "sessionId": OLD_SID, "message": {"role": "user", "content": "<task-id>" + AGENT + "</task-id>"},
+            "toolUseResult": {"agentId": AGENT, "status": "async_launched"}}
     sub = {"type": "assistant", "agentId": AGENT, "sessionId": OLD_SID, "message": {"role": "assistant", "content": []}}
     meta = {"agentType": "general-purpose", "toolUseId": "toolu_01", "parentAgentId": "c0c0c0c0c0c0c0c0c", "spawnDepth": 2}
 
-    assert remap_record(main, plan)["toolUseResult"]["agentId"] == "bbbbbbbbbbbbbbbbb"
-    assert remap_record(sub, plan)["agentId"] == "bbbbbbbbbbbbbbbbb"
-    out_meta = remap_record(meta, plan)
-    assert out_meta["parentAgentId"] == "ddddddddddddddddd" and out_meta["toolUseId"] == "toolu_01"
+    assert remap_record(main, plan)["toolUseResult"]["agentId"] == AGENT
+    assert remap_record(sub, plan)["agentId"] == AGENT
+    assert remap_record(meta, plan) == meta
 
 
 def test_paths_under_old_project_are_relocated_and_others_untouched():
@@ -111,9 +119,9 @@ def test_session_dir_and_file_history_paths_follow_the_new_session():
     delta = {"type": "file-history-delta", "backup": f"/Users/old/.claude/file-history/{OLD_SID}/160c@v3"}
 
     out = remap_record(record, plan)
-    assert out["toolUseResult"]["persistedOutputPath"] == f"{NEW_SESSION_DIR}/tool-results/b7.txt"
-    assert out["toolUseResult"]["transcriptDir"] == NEW_SESSION_DIR
-    assert remap_record(delta, plan)["backup"] == f"{NEW_FILE_HISTORY}/160c@v3"
+    assert out["toolUseResult"]["persistedOutputPath"] == f"{Path(NEW_SESSION_DIR)}/tool-results/b7.txt"
+    assert out["toolUseResult"]["transcriptDir"] == str(Path(NEW_SESSION_DIR))
+    assert remap_record(delta, plan)["backup"] == f"{Path(NEW_FILE_HISTORY)}/160c@v3"
 
 
 def test_message_content_is_never_touched():
@@ -128,7 +136,7 @@ def test_message_content_is_never_touched():
     assert out["message"] == before and out["uuid"] == "n1" and out["requestId"] == "req_01"
 
 
-def test_build_plan_assigns_fresh_ids_to_every_uuid_and_agent():
+def test_build_plan_assigns_fresh_ids_to_every_uuid():
     main = [{"uuid": "u1"}, {"uuid": "u2", "toolUseResult": {"agentId": AGENT}}]
     agents = {AGENT: [{"uuid": "s1", "agentId": AGENT}, {"uuid": "s2", "agentId": AGENT}]}
     plan = build_remap_plan(main_records=main, agent_records_by_id=agents,
@@ -138,7 +146,6 @@ def test_build_plan_assigns_fresh_ids_to_every_uuid_and_agent():
                             regenerate_ids=True)
     assert set(plan.uuid_map) == {"u1", "u2", "s1", "s2"}
     assert len(set(plan.uuid_map.values())) == 4 and not set(plan.uuid_map.values()) & set(plan.uuid_map)
-    assert set(plan.agent_map) == {AGENT} and len(plan.agent_map[AGENT]) == 17 and plan.agent_map[AGENT] != AGENT
 
 
 def test_preserve_mode_keeps_ids_and_only_relocates_paths():
@@ -155,3 +162,21 @@ def test_most_common_cwd_ignores_records_without_one():
     records = [{"type": "mode"}, {"cwd": "/a"}, {"cwd": "/b"}, {"cwd": "/a"}]
     assert most_common_cwd(records) == "/a"
     assert most_common_cwd([{"type": "mode"}]) is None
+
+
+def test_windows_paths_are_relocated_whatever_the_separator():
+    old_root = "C:\\Users\\me\\proj"
+    plan = build_remap_plan(main_records=[], agent_records_by_id={},
+                            old_session_id=OLD_SID, new_session_id=NEW_SID,
+                            old_project_path=old_root, new_project_path="D:\\work\\proj",
+                            new_session_dir=Path(NEW_SESSION_DIR), new_file_history_dir=Path(NEW_FILE_HISTORY),
+                            regenerate_ids=False)
+    record = {"type": "user", "cwd": old_root,
+              "toolUseResult": {"filePath": old_root + "\\calc\\ops.py",
+                                "persistedOutputPath": "C:\\Users\\me\\.claude\\projects\\C--Users-me-proj\\" + OLD_SID + "\\tool-results\\b7.txt"},
+              "attachment": {"snapshot": {"workingDirectory": "C:\\Users\\me\\projx"}}}
+    out = remap_record(record, plan)
+    assert out["cwd"] == "D:\\work\\proj"
+    assert out["toolUseResult"]["filePath"] == "D:\\work\\proj\\calc\\ops.py"
+    assert out["toolUseResult"]["persistedOutputPath"] == str(Path(NEW_SESSION_DIR)) + "\\tool-results\\b7.txt"
+    assert out["attachment"]["snapshot"]["workingDirectory"] == "C:\\Users\\me\\projx", "a sibling dir is not under the project"
