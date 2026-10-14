@@ -97,3 +97,76 @@ def test_history_lines_for_session_are_returned_in_order(tmp_path, monkeypatch):
 def test_history_lines_is_empty_without_history_file(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     assert collect_history_lines(SESSION_ID) == []
+
+
+# ---------------------------------------------------------------------------
+# Project config is mirrored as a tree, the way Claude Code lays it out
+# ---------------------------------------------------------------------------
+
+from ccsession.export.collectors import ConfigFile, collect_project_config  # noqa: E402
+
+
+def _touch(path: Path, text: str = "x") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_skills_are_collected_as_directories(tmp_path):
+    """Claude Code skills live at .claude/skills/<name>/SKILL.md with supporting files."""
+    skill = _touch(tmp_path / ".claude" / "skills" / "deploy" / "SKILL.md")
+    ref = _touch(tmp_path / ".claude" / "skills" / "deploy" / "references" / "steps.md")
+
+    config = collect_project_config(tmp_path)
+
+    assert config["skills"] == [ConfigFile(skill, "deploy/SKILL.md"), ConfigFile(ref, "deploy/references/steps.md")]
+
+
+def test_nested_commands_keep_their_sub_path(tmp_path):
+    top = _touch(tmp_path / ".claude" / "commands" / "top.md")
+    nested = _touch(tmp_path / ".claude" / "commands" / "team" / "review.md")
+    _touch(tmp_path / ".claude" / "commands" / "notes.txt")  # not a command
+
+    config = collect_project_config(tmp_path)
+
+    assert config["commands"] == [ConfigFile(nested, "team/review.md"), ConfigFile(top, "top.md")]
+
+
+def test_project_level_commands_directory_is_not_claude_config(tmp_path):
+    """Only .claude/commands/ is read by Claude Code; a top-level commands/ folder is unrelated."""
+    _touch(tmp_path / "commands" / "stray.md")
+
+    assert collect_project_config(tmp_path)["commands"] == []
+
+
+def test_hooks_agents_and_rules_are_collected_recursively(tmp_path):
+    hook = _touch(tmp_path / ".claude" / "hooks" / "pre" / "lint.sh")
+    agent = _touch(tmp_path / ".claude" / "agents" / "reviewer.md")
+    rule = _touch(tmp_path / ".claude" / "rules" / "python" / "style.md")
+
+    config = collect_project_config(tmp_path)
+
+    assert config["hooks"] == [ConfigFile(hook, "pre/lint.sh")]
+    assert config["agents"] == [ConfigFile(agent, "reviewer.md")]
+    assert config["rules"] == [ConfigFile(rule, "python/style.md")]
+
+
+import os  # noqa: E402
+import sys  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_symlinked_skill_directories_are_collected(tmp_path):
+    """Claude Code loads a skill directory that is a symlink (shared skills)."""
+    shared = tmp_path / "shared" / "team-skill"
+    _touch(shared / "SKILL.md")
+    _touch(shared / "helper.py")
+    (tmp_path / "proj" / ".claude" / "skills").mkdir(parents=True)
+    os.symlink(shared, tmp_path / "proj" / ".claude" / "skills" / "team-skill")
+    os.symlink(tmp_path / "proj" / ".claude" / "skills", shared / "loop")  # a cycle must not hang
+
+    skills = collect_project_config(tmp_path / "proj")["skills"]
+
+    assert sorted(cf.relative for cf in skills) == ["team-skill/SKILL.md", "team-skill/helper.py"]

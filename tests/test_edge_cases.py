@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from ccsession.errors import InvalidExportError
+
 from ccsession.export.session_discovery import (
     find_project_sessions, find_active_session, select_session,
 )
@@ -69,31 +71,31 @@ class TestSessionDiscoveryEdgeCases:
 
 class TestImportEdgeCases:
     def test_manifest_missing(self, tmp_path):
-        """Should raise ImportError when no manifest file exists."""
+        """Should raise InvalidExportError when no manifest file exists."""
         export_dir = tmp_path / "export"
         export_dir.mkdir()
 
-        with pytest.raises(ImportError, match="No .ccsession-manifest.json found"):
+        with pytest.raises(InvalidExportError, match="No .ccsession-manifest.json found"):
             validate_manifest(export_dir)
 
     def test_manifest_invalid_json(self, tmp_path):
-        """Should raise ImportError for malformed JSON manifest."""
+        """Should raise InvalidExportError for malformed JSON manifest."""
         export_dir = tmp_path / "export"
         export_dir.mkdir()
         (export_dir / ".ccsession-manifest.json").write_text("{not valid}", encoding="utf-8")
 
-        with pytest.raises(ImportError, match="Invalid manifest JSON"):
+        with pytest.raises(InvalidExportError, match="Invalid manifest JSON"):
             validate_manifest(export_dir)
 
     def test_manifest_missing_required_fields(self, tmp_path):
-        """Should raise ImportError when required fields are missing."""
+        """Should raise InvalidExportError when required fields are missing."""
         export_dir = tmp_path / "export"
         export_dir.mkdir()
         (export_dir / ".ccsession-manifest.json").write_text(
             json.dumps({"ccsession_version": "2.0.0"}), encoding="utf-8"
         )
 
-        with pytest.raises(ImportError, match="Missing required fields"):
+        with pytest.raises(InvalidExportError, match="Missing required fields"):
             validate_manifest(export_dir)
 
     def test_manifest_valid_returns_dict(self, tmp_path):
@@ -120,7 +122,7 @@ class TestImportEdgeCases:
         (export_dir / ".ccsession-manifest.json").write_text(json.dumps({
             "ccsession_version": "9.0.0", "layout_version": 99, "session_id": "abc",
             "session_data": {"main_session": "session/main.jsonl"}}), encoding="utf-8")
-        with pytest.raises(ImportError, match="layout_version 99"):
+        with pytest.raises(InvalidExportError, match="layout_version 99"):
             validate_manifest(export_dir)
 
     def test_manifest_from_an_older_layout_is_rejected(self, tmp_path):
@@ -130,7 +132,7 @@ class TestImportEdgeCases:
         (export_dir / ".ccsession-manifest.json").write_text(json.dumps({
             "ccsession_version": "2.0.0", "session_id": "abc",
             "session_data": {"main_session": "session/main.jsonl"}}), encoding="utf-8")
-        with pytest.raises(ImportError, match="older"):
+        with pytest.raises(InvalidExportError, match="older"):
             validate_manifest(export_dir)
 
 
@@ -158,6 +160,31 @@ class TestRestoreEdgeCases:
         snapshot_dir.mkdir(parents=True)
         (snapshot_dir / 'snapshot_info.json').write_text("{invalid json", encoding="utf-8")
 
-        # Should raise or handle gracefully — depends on implementation
-        with pytest.raises((json.JSONDecodeError, FileNotFoundError, KeyError)):
+        with pytest.raises(RuntimeError, match="damaged"):
             get_snapshot_info()
+
+
+class TestDiscoveryWarnings:
+    def test_falling_back_to_the_most_recent_session_is_a_warning(self, tmp_path, capsys):
+        """`ccsession --quiet export` must still say when it guessed which session to export."""
+        from ccsession.output import QUIET, NORMAL, set_verbosity
+        old_time = time.time() - 1000
+        sessions = [{'path': tmp_path / 'a.jsonl', 'mtime': old_time, 'session_id': 'aaa'}]
+        set_verbosity(QUIET)
+        try:
+            select_session(sessions)
+        finally:
+            set_verbosity(NORMAL)
+        assert "No active sessions found" in capsys.readouterr().err
+
+
+class TestDiscoveryWarningsNameTheSession:
+    def test_the_fallback_warning_names_the_session_picked(self, tmp_path, capsys):
+        from ccsession.output import QUIET, NORMAL, set_verbosity
+        sessions = [{'path': tmp_path / 'a.jsonl', 'mtime': time.time() - 1000, 'session_id': 'aaa-picked'}]
+        set_verbosity(QUIET)
+        try:
+            select_session(sessions)
+        finally:
+            set_verbosity(NORMAL)
+        assert "aaa-picked" in capsys.readouterr().err

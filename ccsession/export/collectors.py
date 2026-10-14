@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import fnmatch
 import json
+import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from ccsession.paths import get_file_history_dir, get_session_env_dir, get_history_file
@@ -91,50 +94,73 @@ def collect_session_env(session_id: str) -> Path | None:
     return None
 
 
+@dataclass(frozen=True)
+class ConfigFile:
+    """One file of the project's ``.claude/`` configuration.
+
+    ``relative`` is the POSIX path below ``.claude/<type>/``; the export mirrors it
+    under ``config/<type>/`` and the import restores it at the same place, so skill
+    directories (``skills/<name>/SKILL.md``) and namespaced commands survive.
+    """
+
+    source: Path
+    relative: str
+
+
+# (type, glob) -- ``None`` collects every file. Claude Code reads commands, agents and
+# rules as Markdown; skills and hooks are directories with arbitrary supporting files.
 _CONFIG_TYPES = [
-    # (key, directory_name, glob_pattern)
-    ('skills', 'skills', '*.md'),
-    ('hooks', 'hooks', None),      # None means collect all files
-    ('agents', 'agents', '*.md'),
-    ('rules', 'rules', '*.md'),
+    ('commands', '*.md'),
+    ('skills', None),
+    ('hooks', None),
+    ('agents', '*.md'),
+    ('rules', '*.md'),
 ]
+CONFIG_TYPE_NAMES = tuple(name for name, _ in _CONFIG_TYPES)
+
+
+def _collect_config_tree(root: Path, pattern: str | None) -> list[ConfigFile]:
+    """Files under ``root`` matching ``pattern``, following symlinked directories.
+
+    Claude Code loads a skill (or command directory) that is a symlink, so the export
+    must include what is behind it; relative paths keep the link's name, and a
+    directory reached twice through links is visited once.
+    """
+    if not root.is_dir():
+        return []
+    files = []
+    seen = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        real = os.path.realpath(dirpath)
+        if real in seen:
+            dirnames[:] = []
+            continue
+        seen.add(real)
+        dirnames.sort()
+        for filename in filenames:
+            if pattern and not fnmatch.fnmatch(filename, pattern):
+                continue
+            path = Path(dirpath) / filename
+            if path.is_file():
+                files.append(ConfigFile(path, path.relative_to(root).as_posix()))
+    return sorted(files, key=lambda cf: cf.relative.split('/'))
 
 
 def collect_project_config(project_path: str | Path) -> dict:
-    """Collect project configuration files.
+    """Collect the project's ``.claude/`` configuration.
 
-    Returns dict with config type -> list of file paths.
+    Returns dict with config type -> list of :class:`ConfigFile`, plus ``settings``
+    and ``claude_md`` as paths (or None).
     """
     project_path = Path(project_path)
-    config = {
-        'commands': [],
-        'skills': [],
-        'hooks': [],
-        'agents': [],
-        'rules': [],
-        'settings': None,
-        'claude_md': None
-    }
+    config: dict = {name: [] for name in CONFIG_TYPE_NAMES}
+    config['settings'] = None
+    config['claude_md'] = None
 
     claude_dir = project_path / '.claude'
 
-    # Commands - special case: check both .claude/commands/ and commands/
-    for commands_dir in [claude_dir / 'commands', project_path / 'commands']:
-        if commands_dir.exists():
-            for f in commands_dir.glob('*.md'):
-                config['commands'].append(f)
-
-    # Standard config types
-    for key, dirname, glob_pattern in _CONFIG_TYPES:
-        config_dir = claude_dir / dirname
-        if config_dir.exists():
-            if glob_pattern:
-                for f in config_dir.glob(glob_pattern):
-                    config[key].append(f)
-            else:
-                for f in config_dir.iterdir():
-                    if f.is_file():
-                        config[key].append(f)
+    for name, pattern in _CONFIG_TYPES:
+        config[name] = _collect_config_tree(claude_dir / name, pattern)
 
     # Settings (not settings.local.json)
     settings_file = claude_dir / 'settings.json'

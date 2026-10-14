@@ -1,9 +1,6 @@
 """Tests for ccsession.output module."""
 from __future__ import annotations
 
-import sys
-from io import StringIO
-
 import pytest
 
 from ccsession.output import info, detail, error, success, set_verbosity, get_verbosity, QUIET, NORMAL, VERBOSE
@@ -93,3 +90,43 @@ class TestSuccessFunction:
         set_verbosity(QUIET)
         success("done")
         assert capsys.readouterr().out == "done\n"
+
+
+class TestPromptFunction:
+    def test_always_prints_at_quiet(self, capsys):
+        from ccsession.output import prompt
+        set_verbosity(QUIET)
+        prompt("type RESTORE")
+        assert capsys.readouterr().out == "type RESTORE\n"
+
+
+class TestConfigureStreams:
+    def test_emoji_survives_a_strict_legacy_encoding(self):
+        """On Windows a redirected stdout uses the ANSI code page with errors='strict';
+        every command starts with an emoji, so without this nothing ever runs."""
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parents[1]
+        env = {**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONPATH": str(repo)}
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "from ccsession.output import configure_streams, info, error; configure_streams(); "
+             "info('\\u2705 out'); error('\\u274c err')"],
+            capture_output=True, env=env, cwd=repo,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert b"out" in result.stdout and b"err" in result.stderr
+        assert b"Traceback" not in result.stderr
+
+
+class TestMissingStreams:
+    def test_error_and_warn_survive_a_closed_stdout(self, monkeypatch):
+        """pythonw.exe and `>&-` leave sys.stdout as None."""
+        from ccsession.output import warn
+        monkeypatch.setattr("sys.stdout", None)
+        error("still reported")
+        warn("still reported")

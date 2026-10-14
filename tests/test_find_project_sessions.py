@@ -119,3 +119,17 @@ def test_find_session_by_id_skips_agent_files(tmp_path, monkeypatch):
 
     result = find_session_by_id("agent-abc1234")
     assert result is None
+
+
+def test_find_project_sessions_skips_agent_files(tmp_path, monkeypatch):
+    """A stale pre-2.1 flat agent-*.jsonl must never be offered as a main session."""
+    fake_home = tmp_path / "home"
+    project = fake_home / ".claude" / "projects" / get_normalized_project_dir("/mnt/c/proj")
+    project.mkdir(parents=True)
+    main = project / "aaaa-1111.jsonl"
+    main.write_text("{}\n", encoding="utf-8")
+    (project / "agent-abc1234.jsonl").write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    assert [s["path"] for s in find_project_sessions("/mnt/c/proj")] == [main]

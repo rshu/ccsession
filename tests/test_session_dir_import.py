@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from ccsession.errors import InvalidExportError
+
 from ccsession.importing.remap import RemapPlan
 from ccsession.importing.session_dir import SessionDirImport, import_history, import_session_dir
 
@@ -121,7 +123,7 @@ def test_manifest_paths_outside_the_export_are_refused(tmp_path, mirror):
     (tmp_path / "sibling").mkdir()
     (tmp_path / "sibling" / "secret.txt").write_text("x", encoding="utf-8")
     target = tmp_path / "target" / NEW_SID
-    with pytest.raises(ImportError, match="outside the export"):
+    with pytest.raises(InvalidExportError, match="outside the export"):
         import_session_dir(export, {"session_data": {"session_dir": mirror}}, target, _plan())
     assert not target.exists()
 
@@ -131,7 +133,7 @@ def test_history_path_outside_the_export_is_refused(tmp_path, monkeypatch):
     export = tmp_path / "export"
     export.mkdir()
     (tmp_path / "history.jsonl").write_text("{}\n", encoding="utf-8")
-    with pytest.raises(ImportError, match="outside the export"):
+    with pytest.raises(InvalidExportError, match="outside the export"):
         import_history(export, {"session_data": {"history": "../history.jsonl"}}, _plan(), "/new/proj")
 
 

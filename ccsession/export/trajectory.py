@@ -65,7 +65,9 @@ def _transform_content_block(block: dict) -> dict | None:
             'is_error': block.get('is_error', False),
         }
 
-    return None
+    # Anything else (pasted images, redacted thinking, future block types) is kept
+    # verbatim so the trajectory stays lossless.
+    return {'type': 'other', 'block_type': block_type, 'payload': block}
 
 
 def _transform_event(msg: dict, index: int) -> dict:
@@ -108,10 +110,10 @@ def _transform_turn(msg: dict, index: int) -> dict:
 
     Handles both role-bearing messages and non-message events.
     """
-    if 'message' not in msg:
+    message = msg.get('message')
+    if not isinstance(message, dict):
         return _transform_event(msg, index)
 
-    message = msg['message']
     role = message.get('role')
     if not role:
         return _transform_event(msg, index)

@@ -23,6 +23,9 @@ def parse_jsonl_file(file_path: str | Path) -> tuple[list[dict], dict]:
         for line in f:
             try:
                 data = json.loads(line.strip())
+                if not isinstance(data, dict):
+                    # Valid JSON but not a transcript record (e.g. a bare number)
+                    continue
                 messages.append(data)
 
                 # Extract metadata
@@ -32,26 +35,27 @@ def parse_jsonl_file(file_path: str | Path) -> tuple[list[dict], dict]:
                 if 'cwd' in data and metadata['project_dir'] is None:
                     metadata['project_dir'] = data['cwd']
 
-                if 'timestamp' in data:
-                    timestamp = data['timestamp']
+                timestamp = data.get('timestamp')
+                if isinstance(timestamp, str) and timestamp:
                     if metadata['start_time'] is None or timestamp < metadata['start_time']:
                         metadata['start_time'] = timestamp
                     if metadata['end_time'] is None or timestamp > metadata['end_time']:
                         metadata['end_time'] = timestamp
 
-                # Count message types
-                if 'message' in data and 'role' in data['message']:
-                    role = data['message']['role']
+                # Count message types (a record's ``message`` may be absent or malformed)
+                message = data.get('message')
+                if isinstance(message, dict) and 'role' in message:
+                    role = message['role']
                     if role == 'user':
                         metadata['user_messages'] += 1
                     elif role == 'assistant':
                         metadata['assistant_messages'] += 1
-                        if 'model' in data['message']:
-                            metadata['models_used'].add(data['message']['model'])
+                        if 'model' in message:
+                            metadata['models_used'].add(message['model'])
 
                 # Count tool uses
-                if 'message' in data and 'content' in data['message']:
-                    for content in data['message']['content']:
+                if isinstance(message, dict) and isinstance(message.get('content'), list):
+                    for content in message['content']:
                         if isinstance(content, dict) and content.get('type') == 'tool_use':
                             metadata['tool_uses'] += 1
 

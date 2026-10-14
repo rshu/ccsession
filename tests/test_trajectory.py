@@ -161,9 +161,15 @@ class TestTransformContentBlock:
         })
         assert isinstance(result["output"], str)
 
-    def test_unknown_type_returns_none(self):
-        result = _transform_content_block({"type": "unknown_type", "data": "something"})
-        assert result is None
+    def test_unknown_type_is_kept_under_other(self):
+        """Pasted screenshots arrive as ``image`` blocks; format 1.1 must not lose them."""
+        block = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBOR"}}
+        result = _transform_content_block(block)
+        assert result == {"type": "other", "block_type": "image", "payload": block}
+
+    def test_block_without_a_type_is_kept_under_other(self):
+        result = _transform_content_block({"data": "something"})
+        assert result == {"type": "other", "block_type": None, "payload": {"data": "something"}}
 
     def test_non_dict_returns_none(self):
         result = _transform_content_block("not a dict")
