@@ -11,3 +11,6 @@ MAX_DISPLAY_ITEMS = 5
 
 # Trajectory export format version
 TRAJECTORY_FORMAT_VERSION = "1.0"
+
+# Export directory layout version written into .ccsession-manifest.json
+MANIFEST_LAYOUT_VERSION = 2

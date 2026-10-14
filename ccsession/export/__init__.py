@@ -20,6 +20,8 @@ from ccsession.export.collectors import (
     collect_todos,
     collect_session_env,
     collect_project_config,
+    collect_session_dir_files,
+    collect_history_lines,
 )
 from ccsession.export.manifest import (
     generate_manifest,
@@ -44,6 +46,8 @@ __all__ = [
     'collect_todos',
     'collect_session_env',
     'collect_project_config',
+    'collect_session_dir_files',
+    'collect_history_lines',
     'generate_manifest',
     'generate_rendered_markdown',
     'write_empty_marker',

@@ -75,7 +75,7 @@ def cmd_export(args: argparse.Namespace) -> int:
 
         detail(f"  Enhanced structure:")
         for name in ['session/main.jsonl', 'session/agents/', 'session/file-history/',
-                     'session/plan.md', 'session/todos.json', 'config/',
+                     'session/session-dir/', 'session/history.jsonl', 'config/',
                      'trajectory.json', 'RENDERED.md', '.ccsession-manifest.json']:
             detail(f"    - {name}")
 

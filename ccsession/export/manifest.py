@@ -5,8 +5,19 @@ import sys
 from pathlib import Path
 
 from ccsession import CCSESSION_VERSION
+from ccsession.constants import MANIFEST_LAYOUT_VERSION
 from ccsession.utils import utc_now_iso, parse_iso_timestamp
 from ccsession.export.formatters import format_message_markdown
+
+
+def _agent_meta_paths(session_files: dict) -> list[str]:
+    """Manifest paths of the agent-*.meta.json sidecars inside the session-dir mirror."""
+    root = session_files.get('session_dir_root')
+    if not root:
+        return []
+    return [f"session/session-dir/{Path(f).relative_to(root).as_posix()}"
+            for f in session_files.get('session_dir_files', [])
+            if Path(f).name.startswith('agent-') and Path(f).name.endswith('.meta.json')]
 
 
 def generate_manifest(session_id: str, slug: str | None, export_name: str, metadata: dict,
@@ -19,6 +30,7 @@ def generate_manifest(session_id: str, slug: str | None, export_name: str, metad
     """
     manifest = {
         "ccsession_version": CCSESSION_VERSION,
+        "layout_version": MANIFEST_LAYOUT_VERSION,
         "export_timestamp": utc_now_iso(),
         "session_id": session_id,
         "session_slug": slug,
@@ -39,7 +51,10 @@ def generate_manifest(session_id: str, slug: str | None, export_name: str, metad
             "plan_file": "session/plan.md" if session_files.get('plan') else None,
             "todos": "session/todos.json" if session_files.get('todos') else None,
             "session_env": "session/session-env/" if session_files.get('session_env') else None,
-            "tool_results": [f"session/tool-results/{Path(f).name}" for f in session_files.get('tool_results', [])]
+            "tool_results": [f"session/tool-results/{Path(f).name}" for f in session_files.get('tool_results', [])],
+            "session_dir": "session/session-dir/" if session_files.get('session_dir_files') else None,
+            "history": "session/history.jsonl" if session_files.get('history') else None,
+            "agent_meta": _agent_meta_paths(session_files),
         },
 
         "config_snapshot": {
