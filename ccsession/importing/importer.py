@@ -9,6 +9,7 @@ from ccsession.importing.remap import build_remap_plan, most_common_cwd, remap_r
 from ccsession.importing.snapshot import create_snapshot
 from ccsession.importing.session_io import read_session_jsonl, write_session_file
 from ccsession.importing.auxiliary import import_file_history, import_todos, import_plan
+from ccsession.importing.session_dir import import_session_dir, import_history
 from ccsession.importing.config import import_config, add_claude_md_note
 from ccsession.importing.import_log import log_import
 
@@ -107,9 +108,11 @@ def import_session(export_path: Path, project_path: Path | None = None,
     messages = read_session_jsonl(source_session_path)
     print(f"   Read {len(messages)} messages")
 
-    # Rewrite ids (unless preserving) and relocate paths consistently
+    # Rewrite ids (unless preserving) and relocate paths consistently across the
+    # main transcript and every sub-agent transcript
+    agent_records = _read_agent_transcripts(export_path, manifest)
     plan = build_remap_plan(
-        messages, {},
+        messages, agent_records,
         old_session_id=old_session_id, new_session_id=new_session_id,
         old_project_path=most_common_cwd(messages) or manifest.get('original_context', {}).get('repo_path'),
         new_project_path=project_path,
@@ -121,14 +124,23 @@ def import_session(export_path: Path, project_path: Path | None = None,
     print("   Regenerated ids and relocated paths" if not preserve_session_id
           else "   Relocated paths (ids preserved)")
 
-    # 6. Write session file
-    print(f"\n\U0001f4be Writing session file...")
+    # 6. Write the session directory first: a populated target (possible with
+    # --preserve-session-id) must abort before the transcript is written.
+    print(f"\n\U0001f4be Writing session files...")
+    dir_result = import_session_dir(export_path, manifest, target_dir / new_session_id, plan)
+    if dir_result.files:
+        print(f"   \u2713 Session directory: {dir_result.files} files "
+              f"({dir_result.agents} sub-agent transcripts)")
     write_session_file(messages, target_session_path)
     print(f"   \u2713 Wrote session to: {target_session_path}")
 
     # 7. Import auxiliary files
     summary = {
+        'session_id': new_session_id,
         'session_file': str(target_session_path),
+        'session_dir_files': dir_result.files,
+        'agent_sessions': dir_result.agents,
+        'history_lines': 0,
         'file_history_count': 0,
         'todos_imported': False,
         'plan_imported': False,
@@ -152,6 +164,11 @@ def import_session(export_path: Path, project_path: Path | None = None,
         plan_imported = import_plan(export_path, manifest)
         summary['plan_imported'] = plan_imported
         print(f"   \u2713 Plan: {'imported' if plan_imported else 'skipped/none'}")
+
+        # Prompt history
+        history_lines = import_history(export_path, manifest, plan, project_path)
+        summary['history_lines'] = history_lines
+        print(f"   \u2713 Prompt history: {history_lines} lines")
 
     # 8. Import config files
     if not skip_config:
@@ -192,13 +209,25 @@ def import_session(export_path: Path, project_path: Path | None = None,
     log_path = log_import(import_storage_dir, manifest, new_session_id,
                           target_session_path, summary)
 
+    label = manifest.get('session_slug') or new_session_id
     print(f"\n\u2705 Import complete!")
-    print(f"   Session: {manifest.get('session_slug', new_session_id[:8])}")
+    print(f"   Session: {label}")
     print(f"   Session ID: {new_session_id}")
     print(f"   Log: {log_path}")
     print(f"\n\U0001f4a1 To continue this session:")
     print(f"   cd {project_path}")
-    print(f"   claude -c")
-    print(f"\n\u26a0\ufe0f  If problems occur: python ccsession.py restore --restore")
+    print(f"   claude --resume {new_session_id}")
+    print(f"\n\u26a0\ufe0f  If problems occur: ccsession restore --restore")
 
     return summary
+
+
+def _read_agent_transcripts(export_path: Path, manifest: dict) -> dict[str, list[dict]]:
+    """Sub-agent transcripts in the export, keyed by agent id, for id-map building."""
+    agents: dict[str, list[dict]] = {}
+    for relative in manifest.get('session_data', {}).get('agent_sessions', []):
+        path = export_path / relative
+        name = path.name
+        if path.is_file() and name.startswith('agent-') and name.endswith('.jsonl'):
+            agents[name[len('agent-'):-len('.jsonl')]] = read_session_jsonl(path)
+    return agents

@@ -113,6 +113,23 @@ class TestImportEdgeCases:
         result = validate_manifest(export_dir)
         assert result["session_id"] == "abc123"
 
+    def test_manifest_from_a_newer_layout_is_rejected(self, tmp_path):
+        export_dir = tmp_path / "export"
+        export_dir.mkdir()
+        (export_dir / ".ccsession-manifest.json").write_text(json.dumps({
+            "ccsession_version": "9.0.0", "layout_version": 99, "session_id": "abc",
+            "session_data": {"main_session": "session/main.jsonl"}}), encoding="utf-8")
+        with pytest.raises(ImportError, match="layout_version 99"):
+            validate_manifest(export_dir)
+
+    def test_manifest_without_layout_version_is_treated_as_layout_1(self, tmp_path):
+        export_dir = tmp_path / "export"
+        export_dir.mkdir()
+        (export_dir / ".ccsession-manifest.json").write_text(json.dumps({
+            "ccsession_version": "2.0.0", "session_id": "abc",
+            "session_data": {"main_session": "session/main.jsonl"}}), encoding="utf-8")
+        assert validate_manifest(export_dir)["layout_version"] == 1
+
 
 # =============================================================================
 # Restore Edge Cases

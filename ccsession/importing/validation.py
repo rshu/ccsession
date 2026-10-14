@@ -5,6 +5,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from ccsession.constants import MANIFEST_LAYOUT_VERSION
+
 
 def validate_manifest(export_path: Path) -> dict:
     """Validate .ccsession-manifest.json exists and is valid.
@@ -42,6 +44,18 @@ def validate_manifest(export_path: Path) -> dict:
             f"  Missing required fields: {', '.join(missing_fields)}\n"
             "The export may be corrupted or manually modified."
         )
+
+    # Exports from ccsession 2.0.0 predate layout_version; treat them as layout 1.
+    layout_version = manifest.get('layout_version', 1)
+    if not isinstance(layout_version, int) or layout_version < 1:
+        raise ImportError(f"Manifest has an invalid layout_version: {layout_version!r}")
+    if layout_version > MANIFEST_LAYOUT_VERSION:
+        raise ImportError(
+            f"This export uses layout_version {layout_version}, newer than this ccsession "
+            f"understands ({MANIFEST_LAYOUT_VERSION}).\n"
+            "Upgrade ccsession: pip install --upgrade ccsession-cli"
+        )
+    manifest['layout_version'] = layout_version
 
     return manifest
 

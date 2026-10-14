@@ -73,7 +73,8 @@ def test_validate_manifest_valid(tmp_path):
 
     result = validate_manifest(export_dir)
 
-    assert result == manifest
+    # 2.0.0 exports carry no layout_version; validation records the default
+    assert result == {**manifest, "layout_version": 1}
 
 
 # =============================================================================
@@ -278,3 +279,84 @@ def test_import_with_preserved_id_conflict_names_the_existing_file(tmp_path, mon
                            preserve_session_id=True, non_interactive=True)
 
     assert str(existing) in str(excinfo.value)
+
+
+# =============================================================================
+# Full import of a layout-2 export
+# =============================================================================
+
+def _export_with_agent(root, sid, agent_id, project):
+    """A layout-2 export of a session with one sub-agent, shaped like ccsession 2.1 writes it."""
+    mirror = root / "session" / "session-dir"
+    (mirror / "subagents").mkdir(parents=True)
+    main = [
+        {"type": "last-prompt", "sessionId": sid, "lastPrompt": "fix it", "leafUuid": "u3"},
+        {"type": "user", "uuid": "u1", "parentUuid": None, "sessionId": sid, "cwd": project, "version": "2.1.287",
+         "message": {"role": "user", "content": "fix it"}},
+        {"type": "assistant", "uuid": "u2", "parentUuid": "u1", "sessionId": sid, "cwd": project, "requestId": "req_01",
+         "message": {"id": "msg_01", "role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Agent", "input": {}}]}},
+        {"type": "user", "uuid": "u3", "parentUuid": "u2", "sessionId": sid, "cwd": project, "sourceToolAssistantUUID": "u2",
+         "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "ok"}]},
+         "toolUseResult": {"agentId": agent_id, "status": "completed"}},
+    ]
+    (root / "session").mkdir(exist_ok=True)
+    (root / "session" / "main.jsonl").write_text("".join(json.dumps(r) + "\n" for r in main), encoding="utf-8")
+    (mirror / "subagents" / f"agent-{agent_id}.jsonl").write_text(json.dumps(
+        {"type": "user", "uuid": "s1", "parentUuid": None, "agentId": agent_id, "sessionId": sid, "cwd": project,
+         "message": {"role": "user", "content": "sub"}}) + "\n", encoding="utf-8")
+    (mirror / "subagents" / f"agent-{agent_id}.meta.json").write_text(json.dumps({"agentType": "Explore", "toolUseId": "toolu_01"}), encoding="utf-8")
+    (root / "session" / "history.jsonl").write_text(json.dumps(
+        {"display": "fix it", "pastedContents": {}, "timestamp": 1, "project": project, "sessionId": sid}) + "\n", encoding="utf-8")
+    (root / ".ccsession-manifest.json").write_text(json.dumps({
+        "ccsession_version": "2.1.0", "layout_version": 2, "session_id": sid, "session_slug": None, "export_name": "t",
+        "claude_code_version": "2.1.287", "original_context": {"user": "u", "platform": "darwin", "repo_path": project, "git_branch": "main"},
+        "session_data": {"main_session": "session/main.jsonl", "agent_sessions": [f"session/session-dir/subagents/agent-{agent_id}.jsonl"],
+                         "file_history": [], "plan_file": None, "todos": None, "session_env": None, "tool_results": [],
+                         "session_dir": "session/session-dir/", "history": "session/history.jsonl",
+                         "agent_meta": [f"session/session-dir/subagents/agent-{agent_id}.meta.json"]},
+        "config_snapshot": {"commands": [], "skills": [], "hooks": [], "agents": [], "rules": [], "settings": None, "claude_md": None},
+        "statistics": {"message_count": 4, "user_messages": 2, "assistant_messages": 1, "tool_uses": 1, "duration_seconds": None, "models_used": []},
+    }), encoding="utf-8")
+
+
+def test_import_restores_agents_history_and_rewrites_every_reference(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    sid, agent_id = "7f6738b0-d2cb-44ae-a806-09860af58e1f", "a9ba8b4d8b37efc78"
+    export = tmp_path / "export"
+    _export_with_agent(export, sid, agent_id, "/old/proj")
+    project = (tmp_path / "newproj").resolve()
+    project.mkdir()
+
+    with patch("ccsession.importing.importer.check_version_compatibility", return_value=(True, None)):
+        summary = import_session(export, project_path=project, non_interactive=True)
+
+    new_sid = summary["session_id"]
+    assert new_sid != sid
+    main = [json.loads(l) for l in Path(summary["session_file"]).read_text(encoding="utf-8").splitlines()]
+    by_type = {r["type"]: r for r in main}
+    uuids = {r["uuid"] for r in main if "uuid" in r}
+    assert by_type["last-prompt"]["leafUuid"] in uuids and by_type["last-prompt"]["leafUuid"] != "u3"
+    user_result = [r for r in main if r.get("toolUseResult")][0]
+    assert user_result["sourceToolAssistantUUID"] in uuids
+    assert all(r["sessionId"] == new_sid for r in main) and all(r.get("cwd", str(project)) == str(project) for r in main)
+    new_agent = user_result["toolUseResult"]["agentId"]
+    assert new_agent != agent_id
+    session_dir = get_projects_dir(project) / new_sid
+    assert (session_dir / "subagents" / f"agent-{new_agent}.jsonl").is_file()
+    assert (session_dir / "subagents" / f"agent-{new_agent}.meta.json").is_file()
+    assert summary["agent_sessions"] == 1 and summary["session_dir_files"] == 2 and summary["history_lines"] == 1
+    history = [json.loads(l) for l in (tmp_path / ".claude" / "history.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert history[0]["sessionId"] == new_sid and history[0]["project"] == str(project)
+
+
+def test_import_prints_a_resume_hint_with_the_new_id(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    export = tmp_path / "export"
+    _export_with_agent(export, "7f6738b0-d2cb-44ae-a806-09860af58e1f", "a9ba8b4d8b37efc78", "/old/proj")
+    project = (tmp_path / "newproj").resolve()
+    project.mkdir()
+    with patch("ccsession.importing.importer.check_version_compatibility", return_value=(True, None)):
+        summary = import_session(export, project_path=project, non_interactive=True)
+    out = capsys.readouterr().out
+    assert f"claude --resume {summary['session_id']}" in out
+    assert "Session: None" not in out
