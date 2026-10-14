@@ -2,6 +2,7 @@
 # Live end-to-end check for ccsession against the installed Claude Code CLI.
 #
 #   scripts/e2e_live.sh [--keep] [--model <model>]
+#   env: CCSESSION_E2E_MODEL (default sonnet), CCSESSION_E2E_PROMPT (default: fix-the-bug task)
 #
 # 1. creates a throwaway Python project with a failing test,
 # 2. has `claude -p` fix it (one Explore sub-agent, an Edit and a Write),
@@ -80,7 +81,9 @@ git -C "$WORK/proj" add -A
 git -C "$WORK/proj" -c user.email=e2e@example.com -c user.name=e2e commit -qm fixture
 
 echo "== real task with claude -p ($MODEL)"
-PROMPT='This Python project has one failing test. 1) Use the Agent tool to launch an Explore subagent that reports which function is buggy. 2) Run: python3 -m pytest -q. 3) Fix the bug in calc/ops.py with the Edit tool. 4) Create CHANGELOG.md with the Write tool describing the fix in two lines. 5) Run the tests again. 6) Reply with a one-line summary.'
+DEFAULT_PROMPT='This Python project has one failing test. 1) Use the Agent tool to launch an Explore subagent that reports which function is buggy. 2) Run: python3 -m pytest -q. 3) Fix the bug in calc/ops.py with the Edit tool. 4) Create CHANGELOG.md with the Write tool describing the fix in two lines. 5) Run the tests again. 6) Reply with a one-line summary.'
+# CCSESSION_E2E_PROMPT overrides the task, e.g. to force a background sub-agent.
+PROMPT=${CCSESSION_E2E_PROMPT:-$DEFAULT_PROMPT}
 RUN=$(cd "$WORK/proj" && claude -p "$PROMPT" --model "$MODEL" --permission-mode acceptEdits \
   --allowedTools "Read,Edit,Write,Glob,Grep,Agent,Bash(python3:*),Bash(ls:*),Bash(cat:*)" \
   --max-turns 40 --output-format json < /dev/null)
