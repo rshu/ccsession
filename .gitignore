@@ -104,6 +104,7 @@ venv
 # Claude Export folders
 claude_export_*/
 *.jsonl
+!tests/fixtures/**/*.jsonl
 
 # Generated export artifacts
 conversation_full.*
