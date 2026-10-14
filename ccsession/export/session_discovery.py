@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ccsession.constants import MAX_DISPLAY_ITEMS
 from ccsession.output import info, detail
-from ccsession.paths import get_projects_dir
+from ccsession.paths import get_projects_dir, get_projects_root
 
 
 def get_parent_claude_pid() -> int | None:
@@ -107,7 +107,7 @@ def find_session_by_id(session_id: str) -> dict | None:
     Returns:
         Session dict with 'path', 'mtime', 'session_id', or None if not found.
     """
-    projects_root = Path.home() / '.claude' / 'projects'
+    projects_root = get_projects_root()
     if not projects_root.exists():
         return None
 

@@ -6,6 +6,10 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ccsession.paths import (
+    get_claude_dir,
+    get_projects_root,
+    get_history_file,
+    get_session_dir,
     get_normalized_project_dir,
     get_projects_dir,
     get_file_history_dir,
@@ -95,3 +99,35 @@ class TestDirectoryHelpers:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         result = get_snapshot_dir()
         assert result == tmp_path / ".claude-session-imports" / "pre-import-snapshot"
+
+
+class TestClaudeConfigDir:
+    def test_defaults_to_dot_claude_under_home(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert get_claude_dir() == tmp_path / ".claude"
+
+    def test_honours_claude_config_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+        assert get_claude_dir() == tmp_path / "cfg"
+
+    def test_empty_env_value_falls_back_to_home(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")
+        assert get_claude_dir() == tmp_path / ".claude"
+
+    def test_tilde_in_env_value_is_expanded(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))  # expanduser() reads $HOME, not Path.home()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "~/alt-claude")
+        assert get_claude_dir() == tmp_path / "alt-claude"
+
+    def test_every_helper_derives_from_config_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+        with patch("ccsession.paths.os.name", "posix"):
+            assert get_projects_root() == tmp_path / "cfg" / "projects"
+            assert get_projects_dir("/home/user/project") == tmp_path / "cfg" / "projects" / "-home-user-project"
+            assert get_session_dir("/home/user/project", "abc") == tmp_path / "cfg" / "projects" / "-home-user-project" / "abc"
+        assert get_file_history_dir("abc") == tmp_path / "cfg" / "file-history" / "abc"
+        assert get_session_env_dir("abc") == tmp_path / "cfg" / "session-env" / "abc"
+        assert get_todos_dir() == tmp_path / "cfg" / "todos"
+        assert get_plans_dir() == tmp_path / "cfg" / "plans"
+        assert get_history_file() == tmp_path / "cfg" / "history.jsonl"
