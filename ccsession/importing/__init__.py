@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from ccsession.importing.validation import validate_manifest, check_version_compatibility
-from ccsession.importing.uuids import generate_new_session_id, regenerate_message_uuids
+from ccsession.importing.uuids import generate_new_session_id, generate_new_agent_id
+from ccsession.importing.remap import RemapPlan, build_remap_plan, remap_record, remap_records, most_common_cwd
 from ccsession.importing.snapshot import create_snapshot
 from ccsession.importing.session_io import read_session_jsonl, write_session_file
 from ccsession.importing.auxiliary import import_file_history, import_todos, import_plan
@@ -13,7 +14,12 @@ __all__ = [
     'validate_manifest',
     'check_version_compatibility',
     'generate_new_session_id',
-    'regenerate_message_uuids',
+    'generate_new_agent_id',
+    'RemapPlan',
+    'build_remap_plan',
+    'remap_record',
+    'remap_records',
+    'most_common_cwd',
     'create_snapshot',
     'read_session_jsonl',
     'write_session_file',

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ccsession.paths import get_projects_dir, get_import_storage_dir
+from ccsession.paths import get_projects_dir, get_import_storage_dir, get_file_history_dir
 from ccsession.importing.validation import validate_manifest, check_version_compatibility
-from ccsession.importing.uuids import generate_new_session_id, regenerate_message_uuids
+from ccsession.importing.uuids import generate_new_session_id
+from ccsession.importing.remap import build_remap_plan, most_common_cwd, remap_records
 from ccsession.importing.snapshot import create_snapshot
 from ccsession.importing.session_io import read_session_jsonl, write_session_file
 from ccsession.importing.auxiliary import import_file_history, import_todos, import_plan
@@ -106,15 +107,19 @@ def import_session(export_path: Path, project_path: Path | None = None,
     messages = read_session_jsonl(source_session_path)
     print(f"   Read {len(messages)} messages")
 
-    # Regenerate UUIDs unless preserving
-    if not preserve_session_id:
-        messages = regenerate_message_uuids(messages, new_session_id, str(project_path))
-        print(f"   Regenerated UUIDs and updated cwd")
-    else:
-        # Still need to update cwd
-        for msg in messages:
-            if 'cwd' in msg:
-                msg['cwd'] = str(project_path)
+    # Rewrite ids (unless preserving) and relocate paths consistently
+    plan = build_remap_plan(
+        messages, {},
+        old_session_id=old_session_id, new_session_id=new_session_id,
+        old_project_path=most_common_cwd(messages) or manifest.get('original_context', {}).get('repo_path'),
+        new_project_path=project_path,
+        new_session_dir=target_dir / new_session_id,
+        new_file_history_dir=get_file_history_dir(new_session_id),
+        regenerate_ids=not preserve_session_id,
+    )
+    messages = remap_records(messages, plan)
+    print("   Regenerated ids and relocated paths" if not preserve_session_id
+          else "   Relocated paths (ids preserved)")
 
     # 6. Write session file
     print(f"\n\U0001f4be Writing session file...")

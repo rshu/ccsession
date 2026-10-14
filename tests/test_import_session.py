@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ccsession.paths import get_normalized_project_dir, get_projects_dir
 from ccsession.importing.validation import validate_manifest, check_version_compatibility
 from ccsession.importing.importer import import_session
-from ccsession.importing.uuids import generate_new_session_id, generate_new_agent_id, regenerate_message_uuids
+from ccsession.importing.uuids import generate_new_session_id, generate_new_agent_id
 from ccsession.importing.session_io import read_session_jsonl, write_session_file
 
 
@@ -146,70 +146,6 @@ def test_generate_new_agent_id():
 
 
 # =============================================================================
-# UUID Regeneration Tests
-# =============================================================================
-
-def test_regenerate_message_uuids_updates_session_id():
-    """Should update sessionId in all messages."""
-    messages = [
-        {"sessionId": "old-session-id", "uuid": "msg-1"},
-        {"sessionId": "old-session-id", "uuid": "msg-2"},
-    ]
-
-    result = regenerate_message_uuids(messages, "new-session-id", "/new/path")
-
-    assert all(msg["sessionId"] == "new-session-id" for msg in result)
-
-
-def test_regenerate_message_uuids_updates_cwd():
-    """Should update cwd in all messages."""
-    messages = [
-        {"sessionId": "old", "uuid": "msg-1", "cwd": "/old/path"},
-        {"sessionId": "old", "uuid": "msg-2", "cwd": "/old/path"},
-    ]
-
-    result = regenerate_message_uuids(messages, "new-session", "/new/path")
-
-    assert all(msg["cwd"] == "/new/path" for msg in result)
-
-
-def test_regenerate_message_uuids_maintains_parent_refs():
-    """Should update parentUuid references correctly."""
-    messages = [
-        {"sessionId": "old", "uuid": "parent-uuid", "parentUuid": None},
-        {"sessionId": "old", "uuid": "child-uuid", "parentUuid": "parent-uuid"},
-    ]
-
-    result = regenerate_message_uuids(messages, "new-session", "/new/path")
-
-    # Get new UUIDs
-    new_parent_uuid = result[0]["uuid"]
-    new_child_uuid = result[1]["uuid"]
-
-    # Child should reference new parent UUID
-    assert result[1]["parentUuid"] == new_parent_uuid
-
-    # UUIDs should be different from originals
-    assert new_parent_uuid != "parent-uuid"
-    assert new_child_uuid != "child-uuid"
-
-
-def test_regenerate_message_uuids_generates_new_agent_id():
-    """Should generate new agentId for all messages."""
-    messages = [
-        {"sessionId": "old", "uuid": "msg-1", "agentId": "abc1234"},
-        {"sessionId": "old", "uuid": "msg-2", "agentId": "abc1234"},
-    ]
-
-    result = regenerate_message_uuids(messages, "new-session", "/new/path")
-
-    # All messages should have same new agentId
-    agent_ids = [msg["agentId"] for msg in result]
-    assert len(set(agent_ids)) == 1
-    assert agent_ids[0] != "abc1234"
-
-
-# =============================================================================
 # Session File Read/Write Tests
 # =============================================================================
 
@@ -279,39 +215,6 @@ def test_write_session_file_refuses_overwrite(tmp_path):
 # =============================================================================
 # Integration Tests
 # =============================================================================
-
-def test_full_uuid_regeneration_preserves_protected_fields():
-    """Should NOT modify message.id, requestId, signature, tool_use.id."""
-    messages = [
-        {
-            "sessionId": "old-session",
-            "uuid": "msg-uuid",
-            "cwd": "/old/path",
-            "message": {
-                "id": "msg_01ANTHROPIC_ID",
-                "role": "assistant",
-                "content": [
-                    {"type": "thinking", "thinking": "test", "signature": "CRYPTO_SIG"},
-                    {"type": "tool_use", "id": "toolu_01TOOL_ID", "name": "Read"}
-                ]
-            },
-            "requestId": "req_01REQUEST_ID"
-        }
-    ]
-
-    result = regenerate_message_uuids(messages, "new-session", "/new/path")
-
-    # These should be changed
-    assert result[0]["sessionId"] == "new-session"
-    assert result[0]["cwd"] == "/new/path"
-    assert result[0]["uuid"] != "msg-uuid"
-
-    # These should NOT be changed
-    assert result[0]["message"]["id"] == "msg_01ANTHROPIC_ID"
-    assert result[0]["requestId"] == "req_01REQUEST_ID"
-    assert result[0]["message"]["content"][0]["signature"] == "CRYPTO_SIG"
-    assert result[0]["message"]["content"][1]["id"] == "toolu_01TOOL_ID"
-
 
 # =============================================================================
 # Claude Code Version Check Tests
