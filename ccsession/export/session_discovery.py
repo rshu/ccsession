@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from ccsession.constants import MAX_DISPLAY_ITEMS
-from ccsession.output import info, detail
+from ccsession.output import info, detail, warn
 from ccsession.paths import get_projects_dir, get_projects_root
 
 
@@ -28,56 +28,46 @@ def get_parent_claude_pid() -> int | None:
     return None
 
 
+_IDENTIFY_WAIT_SECONDS = 0.2
+
+
+def _mtime_or_none(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
 def identify_current_session(sessions: list[dict], project_dir: str) -> dict | None:
-    """Try to identify which session belongs to the current Claude instance."""
-    # If we're running inside Claude Code, create a temporary marker
+    """Try to identify which session belongs to the current Claude instance.
+
+    Claude Code appends to the live transcript while a tool runs, so the transcript
+    whose modification time advances during a short wait is the current session.
+    Nothing is written anywhere: the comparison is between two readings of each
+    file's own mtime, which also makes it independent of filesystem timestamp
+    resolution. A transcript that cannot be read is skipped.
+    """
     claude_pid = get_parent_claude_pid()
     if not claude_pid:
         return None
 
     detail(f"\U0001f4cd Current Claude Code PID: {claude_pid}")
 
-    # First, refresh session modification times
-    refreshed_sessions = []
+    before = {session['session_id']: _mtime_or_none(session['path']) for session in sessions}
+    time.sleep(_IDENTIFY_WAIT_SECONDS)
+
+    changed = []
     for session in sessions:
-        stat = session['path'].stat()
-        refreshed_sessions.append({
-            'path': session['path'],
-            'mtime': stat.st_mtime,
-            'session_id': session['session_id']
-        })
+        earlier = before[session['session_id']]
+        now = _mtime_or_none(session['path'])
+        if earlier is not None and now is not None and now > earlier:
+            changed.append({'path': session['path'], 'mtime': now, 'session_id': session['session_id']})
 
-    # Create a unique marker file
-    marker_content = f"claude_export_marker_{claude_pid}_{time.time()}"
-    marker_file = Path(project_dir) / '.claude_export_marker'
-
-    try:
-        # Write marker file
-        marker_file.write_text(marker_content)
-        time.sleep(0.2)  # Give it a moment to register
-
-        # Check which session file was modified after marker creation
-        marker_mtime = marker_file.stat().st_mtime
-
-        for session in refreshed_sessions:
-            # Re-check modification time
-            current_mtime = session['path'].stat().st_mtime
-            if current_mtime > marker_mtime:
-                detail(f"\u2713 Session {session['session_id'][:8]}... was modified after marker creation")
-                # Clean up marker
-                marker_file.unlink(missing_ok=True)
-                return session
-
-        # Clean up marker
-        marker_file.unlink(missing_ok=True)
-    except OSError as e:
-        info(f"\u26a0\ufe0f  Session identification failed: {e}")
-        try:
-            marker_file.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    return None
+    if not changed:
+        return None
+    changed.sort(key=lambda s: s['mtime'], reverse=True)
+    detail(f"\u2713 Session {changed[0]['session_id'][:8]}... was written to during the wait")
+    return changed[0]
 
 
 def find_project_sessions(project_path: str | Path) -> list[dict]:
@@ -88,9 +78,12 @@ def find_project_sessions(project_path: str | Path) -> list[dict]:
     if not claude_project_dir.exists():
         return []
 
-    # Get all JSONL files sorted by modification time
+    # Get all JSONL files sorted by modification time. Flat agent-*.jsonl files
+    # (pre-2.1 sub-agent transcripts) are never main sessions.
     jsonl_files = []
     for file in claude_project_dir.glob('*.jsonl'):
+        if file.name.startswith('agent-') or not file.is_file():
+            continue
         stat = file.stat()
         jsonl_files.append({
             'path': file,
@@ -141,7 +134,7 @@ def find_session_by_id(session_id: str) -> dict | None:
             continue
         for file in project_dir.glob('*.jsonl'):
             # Skip agent session files
-            if file.name.startswith('agent-'):
+            if file.name.startswith('agent-') or not file.is_file():
                 continue
             if file.stem == session_id or file.stem.startswith(session_id):
                 stat = file.stat()
@@ -204,12 +197,12 @@ def select_session(sessions: list[dict], project_dir: str | None = None) -> dict
     active_sessions = find_active_session(sessions, _ACTIVE_SESSION_MAX_AGE)
 
     if not active_sessions:
-        info(f"\u26a0\ufe0f  No active sessions found (modified within {_ACTIVE_SESSION_MAX_AGE} seconds).")
+        warn(f"\u26a0\ufe0f  No active sessions found (modified within {_ACTIVE_SESSION_MAX_AGE} seconds); "
+             f"exporting the most recent one: {sessions[0]['session_id']}")
         detail("Available sessions:")
         for i, session in enumerate(sessions[:MAX_DISPLAY_ITEMS]):
             age = int(time.time() - session['mtime'])
             detail(f"  {i+1}. {session['session_id'][:8]}... (modified {age}s ago)")
-        info("\U0001f504 Exporting most recent session...")
         return sessions[0]
 
     if len(active_sessions) == 1:
@@ -232,9 +225,9 @@ def select_session(sessions: list[dict], project_dir: str | None = None) -> dict
     claude_pid = get_parent_claude_pid()
     if claude_pid:
         detail(f"\U0001f50d Running in Claude Code (PID: {claude_pid})")
-        info("\u26a0\ufe0f  Could not identify specific session via activity. Using most recent.")
+        warn(f"\u26a0\ufe0f  Could not identify which active session is this one; "
+             f"exporting the most recent: {active_sessions[0]['session_id']}")
     else:
-        info("\u26a0\ufe0f  Not running inside Claude Code. Using most recent session.")
-
-    info(f"\U0001f4cc Defaulting to: {active_sessions[0]['session_id']}")
+        warn(f"\u26a0\ufe0f  Not running inside Claude Code; exporting the most recent active session: "
+             f"{active_sessions[0]['session_id']}")
     return active_sessions[0]

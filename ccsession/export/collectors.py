@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import fnmatch
 import json
+import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from ccsession.paths import get_file_history_dir, get_session_env_dir, get_history_file
@@ -19,7 +22,8 @@ def collect_agent_sessions(claude_project_dir: Path, session_id: str) -> dict[st
     subagents_dir = claude_project_dir / session_id / 'subagents'
     if not subagents_dir.is_dir():
         return {}
-    return {path.stem[len('agent-'):]: path for path in sorted(subagents_dir.glob('agent-*.jsonl'))}
+    return {path.stem[len('agent-'):]: path for path in sorted(subagents_dir.glob('agent-*.jsonl'))
+            if path.is_file()}
 
 
 def collect_session_dir_files(claude_project_dir: Path, session_id: str) -> list[Path]:
@@ -33,7 +37,7 @@ def collect_session_dir_files(claude_project_dir: Path, session_id: str) -> list
     session_dir = claude_project_dir / session_id
     if not session_dir.is_dir():
         return []
-    return sorted(p for p in session_dir.rglob('*') if p.is_file())
+    return [cf.source for cf in _collect_config_tree(session_dir, None)]
 
 
 def collect_history_lines(session_id: str) -> list[dict]:
@@ -64,7 +68,7 @@ def collect_file_history(session_id: str) -> list[Path]:
     """
     file_history_dir = get_file_history_dir(session_id)
 
-    if not file_history_dir.exists():
+    if not file_history_dir.is_dir():
         return []
 
     files = []
@@ -82,7 +86,7 @@ def collect_session_env(session_id: str) -> Path | None:
     """
     session_env_dir = get_session_env_dir(session_id)
 
-    if session_env_dir.exists():
+    if session_env_dir.is_dir():
         # Check if directory has any files
         files = list(session_env_dir.iterdir())
         if files:
@@ -91,59 +95,85 @@ def collect_session_env(session_id: str) -> Path | None:
     return None
 
 
+@dataclass(frozen=True)
+class ConfigFile:
+    """One file of the project's ``.claude/`` configuration.
+
+    ``relative`` is the POSIX path below ``.claude/<type>/``; the export mirrors it
+    under ``config/<type>/`` and the import restores it at the same place, so skill
+    directories (``skills/<name>/SKILL.md``) and namespaced commands survive.
+    """
+
+    source: Path
+    relative: str
+
+
+# (type, glob) -- ``None`` collects every file. Claude Code reads commands, agents and
+# rules as Markdown; skills and hooks are directories with arbitrary supporting files.
 _CONFIG_TYPES = [
-    # (key, directory_name, glob_pattern)
-    ('skills', 'skills', '*.md'),
-    ('hooks', 'hooks', None),      # None means collect all files
-    ('agents', 'agents', '*.md'),
-    ('rules', 'rules', '*.md'),
+    ('commands', '*.md'),
+    ('skills', None),
+    ('hooks', None),
+    ('agents', '*.md'),
+    ('rules', '*.md'),
 ]
+CONFIG_TYPE_NAMES = tuple(name for name, _ in _CONFIG_TYPES)
+
+
+def _collect_config_tree(root: Path, pattern: str | None) -> list[ConfigFile]:
+    """Files under ``root`` matching ``pattern``, following symlinked directories.
+
+    Claude Code loads a skill (or command directory) that is a symlink, so the export
+    must include what is behind it; relative paths keep each link's name. Only
+    links to a directory already in the current branch are skipped, preventing
+    cycles while preserving aliases to shared skills.
+    """
+    if not root.is_dir():
+        return []
+    files = []
+    ancestors = {str(root): frozenset()}
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        real = os.path.realpath(dirpath)
+        branch = ancestors.pop(dirpath, frozenset())
+        if real in branch:
+            dirnames[:] = []
+            continue
+        dirnames.sort()
+        for dirname in dirnames:
+            ancestors[os.path.join(dirpath, dirname)] = branch | {real}
+        for filename in filenames:
+            if pattern and not fnmatch.fnmatch(filename, pattern):
+                continue
+            path = Path(dirpath) / filename
+            if path.is_file():
+                files.append(ConfigFile(path, path.relative_to(root).as_posix()))
+    return sorted(files, key=lambda cf: cf.relative.split('/'))
 
 
 def collect_project_config(project_path: str | Path) -> dict:
-    """Collect project configuration files.
+    """Collect the project's ``.claude/`` configuration.
 
-    Returns dict with config type -> list of file paths.
+    Returns dict with config type -> list of :class:`ConfigFile`, plus ``settings``
+    and ``claude_md`` as paths (or None).
     """
     project_path = Path(project_path)
-    config = {
-        'commands': [],
-        'skills': [],
-        'hooks': [],
-        'agents': [],
-        'rules': [],
-        'settings': None,
-        'claude_md': None
-    }
+    config: dict = {name: [] for name in CONFIG_TYPE_NAMES}
+    config['settings'] = None
+    config['claude_md'] = None
 
     claude_dir = project_path / '.claude'
 
-    # Commands - special case: check both .claude/commands/ and commands/
-    for commands_dir in [claude_dir / 'commands', project_path / 'commands']:
-        if commands_dir.exists():
-            for f in commands_dir.glob('*.md'):
-                config['commands'].append(f)
-
-    # Standard config types
-    for key, dirname, glob_pattern in _CONFIG_TYPES:
-        config_dir = claude_dir / dirname
-        if config_dir.exists():
-            if glob_pattern:
-                for f in config_dir.glob(glob_pattern):
-                    config[key].append(f)
-            else:
-                for f in config_dir.iterdir():
-                    if f.is_file():
-                        config[key].append(f)
+    for name, pattern in _CONFIG_TYPES:
+        config[name] = _collect_config_tree(claude_dir / name, pattern)
 
     # Settings (not settings.local.json)
     settings_file = claude_dir / 'settings.json'
-    if settings_file.exists():
+    if settings_file.is_file():
         config['settings'] = settings_file
 
     # CLAUDE.md
     claude_md = project_path / 'CLAUDE.md'
-    if claude_md.exists():
+    if claude_md.is_file():
         config['claude_md'] = claude_md
 
     return config

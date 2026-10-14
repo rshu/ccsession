@@ -6,7 +6,10 @@ import sys
 import argparse
 from pathlib import Path
 
-from ccsession.output import info, detail, error, success, set_verbosity, QUIET, NORMAL, VERBOSE
+from ccsession.errors import InvalidExportError
+from ccsession.output import (
+    info, detail, error, success, set_verbosity, configure_streams, QUIET, NORMAL, VERBOSE,
+)
 from ccsession.paths import get_projects_root
 
 
@@ -126,11 +129,11 @@ def run_command(fn, args: argparse.Namespace) -> int:
     """Run a CLI command with shared error handling."""
     try:
         return fn(args)
+    except InvalidExportError as e:
+        error(f"\u274c Import validation failed:\n   {e}")
+        return 1
     except ValueError as e:
         error(f"\u274c {e}")
-        return 1
-    except ImportError as e:
-        error(f"\u274c Import validation failed:\n   {e}")
         return 1
     except FileExistsError as e:
         error(f"\u274c Conflict detected:\n   {e}")
@@ -153,6 +156,7 @@ def run_command(fn, args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point; ``argv`` defaults to ``sys.argv[1:]``."""
+    configure_streams()
     parser = argparse.ArgumentParser(
         prog='ccsession',
         description='Export, import, and restore Claude Code sessions',
@@ -183,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     p_import.add_argument('--preserve-session-id', action='store_true',
                           help='Keep original session ID (fails on conflict)')
     p_import.add_argument('--skip-config', action='store_true',
-                          help="Don't import config files")
+                          help="Don't import config files or add the CLAUDE.md note")
     p_import.add_argument('--skip-auxiliary', action='store_true',
                           help="Don't import file history or prompt history")
     p_import.add_argument('--non-interactive', action='store_true',
@@ -203,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
         set_verbosity(QUIET)
     elif args.verbose:
         set_verbosity(VERBOSE)
+    else:
+        set_verbosity(NORMAL)
 
     dispatch = {
         'export': cmd_export,

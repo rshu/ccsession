@@ -40,6 +40,7 @@ _PATH_KEYS = frozenset({
 _FROZEN_KEYS = frozenset({'message'})
 # A path prefix match must end at a separator or at the end of the string
 _END_OF_SEGMENT = r'(?=[\\/]|$)'
+_WINDOWS_PATH = re.compile(r'^(?:[A-Za-z]:[\\/]|\\)')
 
 
 @dataclass(frozen=True)
@@ -84,8 +85,15 @@ def build_remap_plan(main_records: list[dict], agent_records_by_id: Mapping[str,
         (re.compile(r'^.*[\\/]file-history[\\/]' + sid + _END_OF_SEGMENT), str(new_file_history_dir)),
     ]
     if old_project_path:
-        old_root = old_project_path.rstrip('/\\') or old_project_path
-        rules.append((re.compile('^' + re.escape(old_root) + _END_OF_SEGMENT), str(new_project_path)))
+        windows_source = bool(_WINDOWS_PATH.match(old_project_path))
+        old_root = old_project_path.rstrip('/\\' if windows_source else '/') or old_project_path
+        # Windows records may spell the same root with either separator. Preserve
+        # literal backslashes in POSIX directory names.
+        escaped_root = re.escape(old_root)
+        if windows_source:
+            escaped_root = r'[\\/]'.join(re.escape(part) for part in re.split(r'[\\/]', old_root))
+        boundary = '' if old_root == '/' else (_END_OF_SEGMENT if windows_source else r'(?=/|$)')
+        rules.append((re.compile('^' + escaped_root + boundary), str(new_project_path)))
 
     return RemapPlan(old_session_id=old_session_id, new_session_id=new_session_id,
                      uuid_map=uuid_map, path_rules=tuple(rules))
@@ -127,7 +135,16 @@ def _remap_string(value: str, plan: RemapPlan, key: str) -> str:
 
 def _relocate_path(value: str, plan: RemapPlan) -> str:
     for pattern, replacement in plan.path_rules:
-        relocated, count = pattern.subn(lambda _match: replacement, value, count=1)
-        if count:
-            return relocated
+        match = pattern.match(value)
+        if match:
+            suffix = value[match.end():]
+            if not suffix:
+                return replacement
+            windows_target = bool(_WINDOWS_PATH.match(replacement))
+            separator = '\\' if windows_target else '/'
+            if windows_target or _WINDOWS_PATH.match(value):
+                suffix = re.sub(r'[\\/]', lambda _match: separator, suffix)
+            if not suffix.startswith(separator):
+                suffix = separator + suffix
+            return replacement.rstrip(separator) + suffix
     return value

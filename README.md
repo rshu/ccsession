@@ -3,7 +3,7 @@
 [![CI](https://github.com/rshu/ccsession/actions/workflows/ci.yml/badge.svg)](https://github.com/rshu/ccsession/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/ccsession-cli?cacheSeconds=3600)](https://pypi.org/project/ccsession-cli/)
 [![Python versions](https://img.shields.io/pypi/pyversions/ccsession-cli?cacheSeconds=3600)](https://pypi.org/project/ccsession-cli/)
-[![Downloads](https://img.shields.io/pypi/dm/ccsession-cli?cacheSeconds=3600)](https://pypistats.org/packages/ccsession-cli)
+[![Downloads](https://static.pepy.tech/badge/ccsession-cli/month)](https://pepy.tech/projects/ccsession-cli)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Export, import, and restore Claude Code sessions.
@@ -28,13 +28,19 @@ layout (per-session `subagents/` with `.meta.json` sidecars, `tool-results/`,
 `CLAUDE_CONFIG_DIR` is honoured. Older Claude Code layouts (`~/.claude/todos`, `~/.claude/plans`,
 flat `agent-*.jsonl` files) and exports made by ccsession 2.0.0 are not supported.
 
+Sessions are looked up under `<claude-dir>/projects/<name>/` using Claude Code's own
+naming rule (the path is NFC-normalised, every non-alphanumeric character becomes
+`-`, long names are truncated and hashed); `CLAUDE_CODE_PROJECT_DIR_NAME` is honoured
+together with `CLAUDE_CONFIG_DIR`, as in Claude Code.
+
 ## Export
 
 ```bash
 ccsession export --export-name my-session
 ```
 
-Exports to `.claude-sessions/my-session/` with:
+Exports to `.claude-sessions/my-session/` under the project (or under the current
+directory when the session's project directory no longer exists) with:
 
 - `trajectory.json` — structured JSON for analysis (format 1.1: every record's payload,
   per-turn `meta`, sub-agents with their meta sidecar and spawning tool call, statistics)
@@ -44,6 +50,10 @@ Exports to `.claude-sessions/my-session/` with:
   transcripts and `.meta.json` sidecars, tool-result sidecars, Workflow runs, diagnostics
 - `session/history.jsonl` — the session's prompt-history lines
 - `session/file-history/`, `session/session-env/` — file snapshots and session env
+- `config/` — the project's `.claude/` configuration: `commands/`, `skills/`,
+  `hooks/`, `agents/` and `rules/` mirrored with their sub-directories (skills are
+  `skills/<name>/SKILL.md` plus supporting files), and `settings.json` and `CLAUDE.md`
+  for reference (import does not restore those two)
 - `.ccsession-manifest.json` — metadata (required for import; `layout_version` 2)
 
 ```bash
@@ -57,6 +67,11 @@ ccsession export --output-dir /path/to/output --export-name my-session
 ccsession export --mode classic
 ```
 
+Each export captures the main transcript once so its raw, structured, and rendered
+files agree even while the session is active. An existing export directory is
+refused; choose a new `--export-name` to keep both exports. Automatic names include
+microseconds to allow repeated exports within the same second.
+
 ## Import
 
 ```bash
@@ -68,16 +83,28 @@ Import validates the manifest, generates a new session id, rewrites every intern
 reference consistently (message uuids wherever they appear outside message content,
 session ids, recorded paths) without touching message content or sub-agent ids,
 restores the sub-agent transcripts, sidecars and workflows under `<project>/<new-id>/`,
-appends the prompt history, and copies file snapshots. A pre-import snapshot is taken
-first. Paths recorded inside tool inputs, `wireToolInputs` and file-history backups keep
-the original machine's paths, so `/rewind` cannot match files after a move to a new
-project path.
+appends the prompt history, copies file snapshots, restores config files that do not
+exist yet under `<project>/.claude/` and appends an import note to `CLAUDE.md`.
+Existing files are never overwritten: config files and file-history snapshots that
+are already there are skipped. `settings.json` and `CLAUDE.md` from the export are
+not restored (hook scripts copied into `.claude/hooks/` therefore stay inactive until
+you wire them up). Every path named by the manifest, including files inside the
+session-directory mirror, is confined to the export directory. Imports refuse
+symlinked session and file-history destinations and skip config files beneath
+symlinked directories. With `--preserve-session-id` the session id must be a lowercase UUID.
+Everything is read and checked before the pre-import snapshot is taken, nothing is
+written before it, and every write is first recorded in the snapshot's journal. The
+project directory must exist. Paths
+recorded inside tool inputs, `wireToolInputs` and file-history backups keep the
+original machine's paths, so `/rewind` cannot match files after a move to a new
+project path. Run one import at a time: concurrent imports share the single snapshot
+slot and the import index.
 
 ```bash
 # Import into a different project
 ccsession import .claude-sessions/my-session/ --project-path /path/to/project
 
-# Skip config or auxiliary files
+# Skip config files and the CLAUDE.md note, or file/prompt history
 ccsession import .claude-sessions/my-session/ --skip-config
 ccsession import .claude-sessions/my-session/ --skip-auxiliary
 ```
@@ -87,14 +114,43 @@ ccsession import .claude-sessions/my-session/ --skip-auxiliary
 If an import causes problems:
 
 ```bash
-ccsession restore           # Show snapshot info
-ccsession restore --restore # Restore pre-import state
+ccsession restore                 # Show what the snapshot covers
+ccsession restore --restore       # Roll back the last import (asks for confirmation)
+ccsession restore --restore --yes # Same without the prompt (needed when stdin is not a terminal)
 ```
+
+A restore puts `<claude-dir>/projects/<project>/` back the way it was before the
+import — sessions created since are deleted and sessions that existed before are
+rolled back, including turns added to them afterwards — and then undoes the rest of
+the import: the prompt-history lines the import appended, the file-history snapshots
+it added, the config files and directories it created, and the CLAUDE.md note.
+The project-level entries Claude Code keeps under the project directory (auto-memory
+in `memory/`, and `tiny_memory/`, `bagel/`, `cloud-snapshots/`,
+`bridge-pointer.json`, `.session-aliases`) are kept as they are now, as are later
+edits to `CLAUDE.md` and prompt-history lines written later (including prompts typed
+into the imported session); `history.jsonl` keeps its permissions and, if it is a
+symlink, the link. The plan is printed before anything is deleted, and a restore
+refuses to run if the snapshot is malformed, was taken for another Claude config
+directory or names anything other than one of its project directories. The project
+directory is rebuilt next to itself and swapped in, so a restore that fails leaves
+it untouched; a busy history file keeps the snapshot available, and completed
+cleanup steps are recorded so a retry preserves files recreated after those steps.
+Rerun `ccsession restore --restore` after fixing the cause (imports
+are refused until that restore has finished). One snapshot is kept, of the most
+recent import, and a new one replaces it only once it is complete; an import that
+fails part-way, however it ends, has journaled what it wrote, so the same restore
+cleans it up. Close Claude Code sessions in that project before restoring.
+
+The snapshot and import logs live in `~/.claude-session-imports/`, or in
+`<CLAUDE_CONFIG_DIR>/ccsession-imports/` when `CLAUDE_CONFIG_DIR` is set (a relative
+value is taken relative to the current directory). A snapshot written by ccsession
+2.1.0 is still found in `~/.claude-session-imports/` when `CLAUDE_CONFIG_DIR` is set
+and its own storage has never been used, and rolls back the project directory only.
 
 ## Flags
 
 ```bash
-ccsession --quiet export ...    # Errors and success only
+ccsession --quiet export ...    # Errors, warnings and the final result only
 ccsession --verbose export ...  # Detailed output
 ```
 

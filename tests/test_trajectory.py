@@ -9,6 +9,7 @@ from ccsession.export.trajectory import (
     _transform_turn,
     _compute_statistics,
     format_trajectory,
+    load_agent_meta,
 )
 
 
@@ -161,9 +162,15 @@ class TestTransformContentBlock:
         })
         assert isinstance(result["output"], str)
 
-    def test_unknown_type_returns_none(self):
-        result = _transform_content_block({"type": "unknown_type", "data": "something"})
-        assert result is None
+    def test_unknown_type_is_kept_under_other(self):
+        """Pasted screenshots arrive as ``image`` blocks; format 1.1 must not lose them."""
+        block = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBOR"}}
+        result = _transform_content_block(block)
+        assert result == {"type": "other", "block_type": "image", "payload": block}
+
+    def test_block_without_a_type_is_kept_under_other(self):
+        result = _transform_content_block({"data": "something"})
+        assert result == {"type": "other", "block_type": None, "payload": {"data": "something"}}
 
     def test_non_dict_returns_none(self):
         result = _transform_content_block("not a dict")
@@ -608,3 +615,9 @@ class TestLosslessTrajectory:
         result = format_trajectory([_user_msg(uuid="u1", text="hi")], self.METADATA, self.MSG_META)
         assert result["statistics"]["cost_usd"] is None
         assert result["format_version"] == "1.1"
+
+
+def test_agent_meta_with_invalid_utf8_is_treated_as_unreadable(tmp_path):
+    agent = tmp_path / 'agent-a.jsonl'
+    agent.with_suffix('.meta.json').write_bytes(b'{"description":"\xff"}')
+    assert load_agent_meta(agent) == {}

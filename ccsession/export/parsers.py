@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ccsession.utils import parse_iso_timestamp
+
 
 def parse_jsonl_file(file_path: str | Path) -> tuple[list[dict], dict]:
     """Parse a JSONL file and extract all messages and metadata."""
@@ -18,11 +20,15 @@ def parse_jsonl_file(file_path: str | Path) -> tuple[list[dict], dict]:
         'tool_uses': 0,
         'models_used': set()
     }
+    start = end = None
 
     with open(file_path, 'r', encoding='utf-8') as f:
         for line in f:
             try:
                 data = json.loads(line.strip())
+                if not isinstance(data, dict):
+                    # Valid JSON but not a transcript record (e.g. a bare number)
+                    continue
                 messages.append(data)
 
                 # Extract metadata
@@ -32,26 +38,35 @@ def parse_jsonl_file(file_path: str | Path) -> tuple[list[dict], dict]:
                 if 'cwd' in data and metadata['project_dir'] is None:
                     metadata['project_dir'] = data['cwd']
 
-                if 'timestamp' in data:
-                    timestamp = data['timestamp']
-                    if metadata['start_time'] is None or timestamp < metadata['start_time']:
-                        metadata['start_time'] = timestamp
-                    if metadata['end_time'] is None or timestamp > metadata['end_time']:
-                        metadata['end_time'] = timestamp
+                timestamp = data.get('timestamp')
+                if isinstance(timestamp, str) and timestamp:
+                    try:
+                        parsed = parse_iso_timestamp(timestamp)
+                    except ValueError:
+                        parsed = None
+                    if parsed is not None:
+                        if start is None or parsed < start:
+                            start = parsed
+                            metadata['start_time'] = timestamp
+                        if end is None or parsed > end:
+                            end = parsed
+                            metadata['end_time'] = timestamp
 
-                # Count message types
-                if 'message' in data and 'role' in data['message']:
-                    role = data['message']['role']
+                # Count message types (a record's ``message`` may be absent or malformed)
+                message = data.get('message')
+                if isinstance(message, dict) and 'role' in message:
+                    role = message['role']
                     if role == 'user':
                         metadata['user_messages'] += 1
                     elif role == 'assistant':
                         metadata['assistant_messages'] += 1
-                        if 'model' in data['message']:
-                            metadata['models_used'].add(data['message']['model'])
+                        model = message.get('model')
+                        if isinstance(model, str) and model:
+                            metadata['models_used'].add(model)
 
                 # Count tool uses
-                if 'message' in data and 'content' in data['message']:
-                    for content in data['message']['content']:
+                if isinstance(message, dict) and isinstance(message.get('content'), list):
+                    for content in message['content']:
                         if isinstance(content, dict) and content.get('type') == 'tool_use':
                             metadata['tool_uses'] += 1
 
@@ -70,17 +85,13 @@ def extract_message_metadata(messages: list[dict]) -> dict:
     Returns dict with 'version', 'git_branch', and 'slug' (each may be None).
     """
     result: dict = {'version': None, 'git_branch': None, 'slug': None}
-    found = 0
     for msg in messages:
-        if result['version'] is None and 'version' in msg:
+        if result['version'] is None and isinstance(msg.get('version'), str) and msg['version']:
             result['version'] = msg['version']
-            found += 1
-        if result['git_branch'] is None and 'gitBranch' in msg:
+        if result['git_branch'] is None and isinstance(msg.get('gitBranch'), str) and msg['gitBranch']:
             result['git_branch'] = msg['gitBranch']
-            found += 1
-        if result['slug'] is None and 'slug' in msg:
+        if result['slug'] is None and isinstance(msg.get('slug'), str) and msg['slug']:
             result['slug'] = msg['slug']
-            found += 1
-        if found == 3:
+        if all(value is not None for value in result.values()):
             break
     return result

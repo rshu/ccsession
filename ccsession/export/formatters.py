@@ -7,7 +7,11 @@ from xml.dom import minidom
 from xml.parsers.expat import ExpatError
 
 from ccsession.constants import TOOL_RESULT_MAX_LENGTH
+from ccsession.output import error
 from ccsession.utils import parse_iso_timestamp
+
+# C0/C1 controls (except tab, LF, CR), lone surrogates and the two non-characters XML 1.0 forbids
+_XML_INVALID_RE = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\uD800-\uDFFF\uFFFE\uFFFF]')
 
 
 def clean_text_for_xml(text: str | None) -> str | None:
@@ -15,24 +19,80 @@ def clean_text_for_xml(text: str | None) -> str | None:
     if not text:
         return text
     # Remove control characters except newline, tab, and carriage return
-    text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]', '', str(text))
-    return text
+    return _XML_INVALID_RE.sub('', str(text))
+
+
+def _xml_text(value) -> str:
+    """Any value as XML-safe text; ``None`` becomes an empty string."""
+    if value is None:
+        return ''
+    return _XML_INVALID_RE.sub('', str(value))
+
+
+def _display_text(value) -> str:
+    """Render malformed text fields without aborting an otherwise valid export."""
+    return '' if value is None else str(value)
+
+
+def render_tool_result_content(content) -> str:
+    """Human-readable text for a ``tool_result`` block's ``content``.
+
+    Claude Code stores either a string or a list of content blocks (text, image,
+    document, ...). Text blocks are shown verbatim, images as a short placeholder
+    (a screenshot can be hundreds of kilobytes of base64) and anything else as JSON.
+    """
+    if content is None:
+        return ''
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return json.dumps(content, ensure_ascii=False)
+
+    parts = []
+    for block in content:
+        if not isinstance(block, dict):
+            parts.append(str(block))
+            continue
+        block_type = block.get('type')
+        if block_type == 'text':
+            parts.append(str(block.get('text', '')))
+        elif block_type == 'image':
+            source = block.get('source')
+            if isinstance(source, dict) and source.get('type') == 'base64':
+                parts.append(f"[image: {source.get('media_type', 'unknown')}, "
+                             f"{len(str(source.get('data', '')))} base64 chars]")
+            elif isinstance(source, dict) and source.get('url'):
+                parts.append(f"[image: {source['url']}]")
+            else:
+                parts.append('[image]')
+        else:
+            parts.append(json.dumps(block, ensure_ascii=False))
+    return '\n'.join(parts)
+
+
+def _truncate_tool_result(text: str) -> list[str]:
+    if len(text) <= TOOL_RESULT_MAX_LENGTH:
+        return [text]
+    return [text[:TOOL_RESULT_MAX_LENGTH],
+            f"\n... (truncated, {len(text) - TOOL_RESULT_MAX_LENGTH} chars omitted)"]
 
 
 def format_message_markdown(message_data: dict) -> str:
     """Format a single message as markdown."""
     output = []
 
-    if 'message' not in message_data:
+    msg = message_data.get('message')
+    if not isinstance(msg, dict):
         return ""
 
-    msg = message_data['message']
     timestamp = message_data.get('timestamp', '')
 
     # Add timestamp
     if timestamp:
-        dt = parse_iso_timestamp(timestamp)
-        output.append(f"**[{dt.strftime('%Y-%m-%d %H:%M:%S')}]**")
+        try:
+            output.append(f"**[{parse_iso_timestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')}]**")
+        except (ValueError, TypeError, AttributeError):
+            output.append(f"**[{timestamp}]**")
 
     # Add role header
     role = msg.get('role', 'unknown')
@@ -52,13 +112,13 @@ def format_message_markdown(message_data: dict) -> str:
                     content_type = content.get('type')
 
                     if content_type == 'text':
-                        output.append(content.get('text', ''))
+                        output.append(_display_text(content.get('text', '')))
 
                     elif content_type == 'thinking':
                         output.append("\n<details>")
                         output.append("<summary>\U0001f4ad Internal Reasoning (click to expand)</summary>\n")
                         output.append("```")
-                        output.append(content.get('thinking', ''))
+                        output.append(_display_text(content.get('thinking', '')))
                         output.append("```")
                         output.append("</details>\n")
 
@@ -73,54 +133,53 @@ def format_message_markdown(message_data: dict) -> str:
                     elif content_type == 'tool_result':
                         output.append("\n\U0001f4ca **Tool Result:**")
                         output.append("```")
-                        result = content.get('content', '')
-                        if isinstance(result, str):
-                            output.append(result[:TOOL_RESULT_MAX_LENGTH])
-                            if len(result) > TOOL_RESULT_MAX_LENGTH:
-                                output.append(f"\n... (truncated, {len(result) - TOOL_RESULT_MAX_LENGTH} chars omitted)")
-                        else:
-                            output.append(str(result))
+                        output.extend(_truncate_tool_result(render_tool_result_content(content.get('content', ''))))
                         output.append("```\n")
 
     return '\n'.join(output)
 
 
 def format_message_xml(message_data: dict, parent_element: ET.Element) -> None:
-    """Format a single message as XML element."""
+    """Format a single message as XML element.
+
+    Every string that lands in the document passes through ``_xml_text`` so a stray
+    control character (ANSI escapes in slash-command output, for instance) can never
+    make the file ill-formed.
+    """
     msg_elem = ET.SubElement(parent_element, 'message')
 
     # Add attributes
-    msg_elem.set('uuid', message_data.get('uuid', ''))
+    msg_elem.set('uuid', _xml_text(message_data.get('uuid', '')))
     if message_data.get('parentUuid'):
-        msg_elem.set('parent-uuid', message_data['parentUuid'])
-    msg_elem.set('timestamp', message_data.get('timestamp', ''))
+        msg_elem.set('parent-uuid', _xml_text(message_data['parentUuid']))
+    msg_elem.set('timestamp', _xml_text(message_data.get('timestamp', '')))
 
     # Add metadata
     if 'type' in message_data:
-        ET.SubElement(msg_elem, 'event-type').text = message_data['type']
+        ET.SubElement(msg_elem, 'event-type').text = _xml_text(message_data['type'])
     if 'cwd' in message_data:
-        ET.SubElement(msg_elem, 'working-directory').text = message_data['cwd']
+        ET.SubElement(msg_elem, 'working-directory').text = _xml_text(message_data['cwd'])
     if 'requestId' in message_data:
-        ET.SubElement(msg_elem, 'request-id').text = message_data['requestId']
+        ET.SubElement(msg_elem, 'request-id').text = _xml_text(message_data['requestId'])
 
     # Process message content
-    if 'message' in message_data:
+    if isinstance(message_data.get('message'), dict):
         msg = message_data['message']
 
         # Add role
         if 'role' in msg:
-            ET.SubElement(msg_elem, 'role').text = msg['role']
+            ET.SubElement(msg_elem, 'role').text = _xml_text(msg['role'])
 
         # Add model info
         if 'model' in msg:
-            ET.SubElement(msg_elem, 'model').text = msg['model']
+            ET.SubElement(msg_elem, 'model').text = _xml_text(msg['model'])
 
         # Process content
         if 'content' in msg:
             content_elem = ET.SubElement(msg_elem, 'content')
 
             if isinstance(msg['content'], str):
-                content_elem.text = msg['content']
+                content_elem.text = _xml_text(msg['content'])
             elif isinstance(msg['content'], list):
                 for content in msg['content']:
                     if isinstance(content, dict):
@@ -128,48 +187,43 @@ def format_message_xml(message_data: dict, parent_element: ET.Element) -> None:
 
                         if content_type == 'text':
                             text_elem = ET.SubElement(content_elem, 'text')
-                            text_elem.text = clean_text_for_xml(content.get('text', ''))
+                            text_elem.text = _xml_text(content.get('text', ''))
 
                         elif content_type == 'thinking':
                             thinking_elem = ET.SubElement(content_elem, 'thinking')
                             if 'signature' in content:
-                                thinking_elem.set('signature', content['signature'])
-                            thinking_elem.text = clean_text_for_xml(content.get('thinking', ''))
+                                thinking_elem.set('signature', _xml_text(content['signature']))
+                            thinking_elem.text = _xml_text(content.get('thinking', ''))
 
                         elif content_type == 'tool_use':
                             tool_elem = ET.SubElement(content_elem, 'tool-use')
-                            tool_elem.set('id', content.get('id', ''))
-                            tool_elem.set('name', content.get('name', ''))
+                            tool_elem.set('id', _xml_text(content.get('id', '')))
+                            tool_elem.set('name', _xml_text(content.get('name', '')))
 
                             input_elem = ET.SubElement(tool_elem, 'input')
-                            input_elem.text = clean_text_for_xml(json.dumps(content.get('input', {}), indent=2))
+                            input_elem.text = _xml_text(json.dumps(content.get('input', {}), indent=2))
 
                         elif content_type == 'tool_result':
                             result_elem = ET.SubElement(content_elem, 'tool-result')
                             if 'tool_use_id' in content:
-                                result_elem.set('tool-use-id', content['tool_use_id'])
-
-                            result_content = content.get('content', '')
-                            if isinstance(result_content, str):
-                                result_elem.text = clean_text_for_xml(result_content)
-                            else:
-                                result_elem.text = clean_text_for_xml(str(result_content))
+                                result_elem.set('tool-use-id', _xml_text(content['tool_use_id']))
+                            result_elem.text = _xml_text(render_tool_result_content(content.get('content', '')))
 
         # Add usage info
-        if 'usage' in msg:
+        if isinstance(msg.get('usage'), dict):
             usage_elem = ET.SubElement(msg_elem, 'usage')
             usage = msg['usage']
 
             if 'input_tokens' in usage:
-                ET.SubElement(usage_elem, 'input-tokens').text = str(usage['input_tokens'])
+                ET.SubElement(usage_elem, 'input-tokens').text = _xml_text(usage['input_tokens'])
             if 'output_tokens' in usage:
-                ET.SubElement(usage_elem, 'output-tokens').text = str(usage['output_tokens'])
+                ET.SubElement(usage_elem, 'output-tokens').text = _xml_text(usage['output_tokens'])
             if 'cache_creation_input_tokens' in usage:
-                ET.SubElement(usage_elem, 'cache-creation-tokens').text = str(usage['cache_creation_input_tokens'])
+                ET.SubElement(usage_elem, 'cache-creation-tokens').text = _xml_text(usage['cache_creation_input_tokens'])
             if 'cache_read_input_tokens' in usage:
-                ET.SubElement(usage_elem, 'cache-read-tokens').text = str(usage['cache_read_input_tokens'])
+                ET.SubElement(usage_elem, 'cache-read-tokens').text = _xml_text(usage['cache_read_input_tokens'])
             if 'service_tier' in usage:
-                ET.SubElement(usage_elem, 'service-tier').text = usage['service_tier']
+                ET.SubElement(usage_elem, 'service-tier').text = _xml_text(usage['service_tier'])
 
     # Add tool result metadata if present
     if 'toolUseResult' in message_data:
@@ -178,15 +232,15 @@ def format_message_xml(message_data: dict, parent_element: ET.Element) -> None:
             tool_meta = ET.SubElement(msg_elem, 'tool-execution-metadata')
 
             if 'bytes' in tool_result:
-                ET.SubElement(tool_meta, 'response-bytes').text = str(tool_result['bytes'])
+                ET.SubElement(tool_meta, 'response-bytes').text = _xml_text(tool_result['bytes'])
             if 'code' in tool_result:
-                ET.SubElement(tool_meta, 'response-code').text = str(tool_result['code'])
+                ET.SubElement(tool_meta, 'response-code').text = _xml_text(tool_result['code'])
             if 'codeText' in tool_result:
-                ET.SubElement(tool_meta, 'response-text').text = tool_result['codeText']
+                ET.SubElement(tool_meta, 'response-text').text = _xml_text(tool_result['codeText'])
             if 'durationMs' in tool_result:
-                ET.SubElement(tool_meta, 'duration-ms').text = str(tool_result['durationMs'])
+                ET.SubElement(tool_meta, 'duration-ms').text = _xml_text(tool_result['durationMs'])
             if 'url' in tool_result:
-                ET.SubElement(tool_meta, 'url').text = tool_result['url']
+                ET.SubElement(tool_meta, 'url').text = _xml_text(tool_result['url'])
 
 
 def prettify_xml(elem: ET.Element) -> str:
@@ -197,5 +251,5 @@ def prettify_xml(elem: ET.Element) -> str:
         return reparsed.toprettyxml(indent="  ")
     except ExpatError as e:
         # Fallback: return unprettified XML if pretty printing fails
-        print(f"\u26a0\ufe0f  XML prettification failed: {e}")
-        return ET.tostring(elem, encoding='unicode', method='xml')
+        error(f"⚠️  XML prettification failed: {e}")
+        return '<?xml version="1.0" ?>\n' + ET.tostring(elem, encoding='unicode', method='xml')

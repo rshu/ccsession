@@ -1,34 +1,33 @@
 from __future__ import annotations
 
-import json
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from ccsession.export.parsers import parse_jsonl_file, extract_message_metadata
-from ccsession.export.formatters import format_message_markdown, format_message_xml, prettify_xml
+from ccsession.export.formatters import _xml_text, format_message_markdown, format_message_xml, prettify_xml
 from ccsession.export.collectors import (
-    collect_agent_sessions, collect_file_history, collect_session_env, collect_project_config,
+    ConfigFile, collect_agent_sessions, collect_file_history, collect_session_env, collect_project_config,
     collect_session_dir_files, collect_history_lines,
 )
 from ccsession.export.manifest import generate_manifest, generate_rendered_markdown, write_empty_marker
 from ccsession.export.trajectory import format_trajectory
-from ccsession.utils import write_json
+from ccsession.output import info, warn
+from ccsession.utils import json_line, write_json
 
 
-def _write_legacy_files(export_dir: Path, session_path: Path, messages: list[dict],
-                        metadata: dict) -> None:
-    """Write legacy export files (metadata, raw JSONL, markdown, XML, summary)."""
+def _write_legacy_files(export_dir: Path, messages: list[dict], metadata: dict) -> None:
+    """Write legacy metadata, markdown, XML and summary from the captured JSONL."""
     # Save metadata
     write_json(export_dir / 'session_info.json', metadata)
 
-    # Copy raw JSONL
-    shutil.copy2(session_path, export_dir / 'raw_messages.jsonl')
-
     # Generate markdown conversation
+    # The human-readable files tolerate text UTF-8 cannot encode (a lone surrogate from a
+    # \ud800 escape in the transcript); the verbatim copies stay lossless.
     md_path = export_dir / 'conversation_full.md'
-    with open(md_path, 'w', encoding='utf-8') as f:
+    with open(md_path, 'w', encoding='utf-8', errors='replace') as f:
         f.write(f"# Claude Code Session Export\n\n")
         f.write(f"**Session ID:** `{metadata['session_id']}`\n")
         f.write(f"**Project:** `{metadata['project_dir']}`\n")
@@ -53,11 +52,11 @@ def _write_legacy_files(export_dir: Path, session_path: Path, messages: list[dic
     root.set('export-version', '1.0')
 
     meta_elem = ET.SubElement(root, 'metadata')
-    ET.SubElement(meta_elem, 'session-id').text = metadata['session_id']
-    ET.SubElement(meta_elem, 'version').text = messages[0].get('version', '') if messages else ''
-    ET.SubElement(meta_elem, 'working-directory').text = metadata['project_dir']
-    ET.SubElement(meta_elem, 'start-time').text = metadata['start_time']
-    ET.SubElement(meta_elem, 'end-time').text = metadata['end_time']
+    ET.SubElement(meta_elem, 'session-id').text = _xml_text(metadata['session_id'])
+    ET.SubElement(meta_elem, 'version').text = _xml_text(messages[0].get('version', '') if messages else '')
+    ET.SubElement(meta_elem, 'working-directory').text = _xml_text(metadata['project_dir'])
+    ET.SubElement(meta_elem, 'start-time').text = _xml_text(metadata['start_time'])
+    ET.SubElement(meta_elem, 'end-time').text = _xml_text(metadata['end_time'])
     ET.SubElement(meta_elem, 'export-time').text = datetime.now(timezone.utc).isoformat()
 
     stats_elem = ET.SubElement(meta_elem, 'statistics')
@@ -68,7 +67,7 @@ def _write_legacy_files(export_dir: Path, session_path: Path, messages: list[dic
 
     models_elem = ET.SubElement(stats_elem, 'models-used')
     for model in metadata['models_used']:
-        ET.SubElement(models_elem, 'model').text = model
+        ET.SubElement(models_elem, 'model').text = _xml_text(model)
 
     messages_elem = ET.SubElement(root, 'messages')
     for msg in messages:
@@ -76,12 +75,12 @@ def _write_legacy_files(export_dir: Path, session_path: Path, messages: list[dic
 
     xml_path = export_dir / 'conversation_full.xml'
     xml_string = prettify_xml(root)
-    with open(xml_path, 'w', encoding='utf-8') as f:
+    with open(xml_path, 'w', encoding='utf-8', errors='replace') as f:
         f.write(xml_string)
 
     # Generate summary
     summary_path = export_dir / 'summary.txt'
-    with open(summary_path, 'w', encoding='utf-8') as f:
+    with open(summary_path, 'w', encoding='utf-8', errors='replace') as f:
         f.write(f"Claude Code Session Summary\n")
         f.write(f"==========================\n\n")
         f.write(f"Session ID: {metadata['session_id']}\n")
@@ -98,13 +97,46 @@ def _write_legacy_files(export_dir: Path, session_path: Path, messages: list[dic
 
 
 def _copy_files_to_dir(files: list, target_dir: Path, empty_message: str) -> None:
-    """Copy files to a directory, or write an empty marker if no files."""
+    """Copy files flat into a directory, or write an empty marker if no files."""
     target_dir.mkdir(exist_ok=True)
     if files:
         for f in files:
             shutil.copy2(f, target_dir / f.name)
     else:
         write_empty_marker(target_dir, empty_message)
+
+
+def _copy_config_tree(files: list[ConfigFile], target_dir: Path, empty_message: str) -> None:
+    """Mirror config files under ``target_dir`` keeping their relative paths."""
+    target_dir.mkdir(exist_ok=True)
+    if not files:
+        write_empty_marker(target_dir, empty_message)
+        return
+    for cf in files:
+        target = target_dir / cf.relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(cf.source, target)
+
+
+def _check_export_name(name) -> None:
+    """An export name is one plain directory name; anything else could place (and,
+    on failure, remove) the export outside its parent directory."""
+    if (not isinstance(name, str) or name in ('', '.', '..') or '/' in name or '\\' in name
+            or '\0' in name or os.path.isabs(name) or os.path.splitdrive(name)[0]):
+        raise ValueError(f"Invalid export name {name!r}: use a single directory name, without '/', '\\' or '..'")
+
+
+def _default_export_root(project_path: Path) -> Path:
+    """Where ``.claude-sessions/`` goes when no ``--output-dir`` is given.
+
+    A session exported by id may belong to a project that has since been deleted or
+    moved; recreating that directory just to hold the export would be surprising, so
+    the current working directory is used instead.
+    """
+    if project_path.is_dir():
+        return project_path
+    warn(f"⚠️  Project directory {project_path} does not exist; exporting under {Path.cwd()}")
+    return Path.cwd()
 
 
 def export_session(session_info: dict, project_path: str | Path,
@@ -123,35 +155,59 @@ def export_session(session_info: dict, project_path: str | Path,
     Returns:
         Tuple of (export_dir, manifest) where manifest is None for classic mode.
     """
+    if mode not in ('portable', 'classic'):
+        raise ValueError(f"Invalid export mode {mode!r}: use 'portable' or 'classic'")
     project_path = Path(project_path)
-
-    # Parse the session file
-    messages, metadata = parse_jsonl_file(session_info['path'])
-
-    # Get session ID — prefer the filename-based ID (canonical) over JSONL-internal sessionId
+    session_info = dict(session_info, path=Path(session_info['path']))
     session_id = session_info['session_id']
-    metadata['session_id'] = session_id
-    msg_meta = extract_message_metadata(messages)
-    slug = msg_meta['slug']
+
+    if export_name is not None:
+        _check_export_name(export_name)
 
     # Auto-generate export name if not provided
     if not export_name:
-        timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d_%H-%M-%S')
+        timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d_%H-%M-%S_%f')
         export_name = f"{timestamp}_{session_id[:8]}" if mode == 'classic' else timestamp
 
     # Determine output directory
     if output_dir:
         export_dir = Path(output_dir) / export_name
     elif mode == 'portable':
-        export_dir = project_path / '.claude-sessions' / export_name
+        export_dir = _default_export_root(project_path) / '.claude-sessions' / export_name
     else:
         export_dir = Path.home() / 'claude_sessions' / 'exports' / export_name
 
-    export_dir.mkdir(parents=True, exist_ok=True)
+    # Reusing a directory mixes old snapshots with new ones and can corrupt an
+    # existing export on failure. mkdir also rejects files and symlinks here.
+    export_dir.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        export_dir.mkdir()
+    except FileExistsError as exc:
+        raise FileExistsError(f"Export destination already exists: {export_dir}. "
+                              "Choose a different export name.") from exc
+    try:
+        # Capture the live transcript once. Every format describes these exact
+        # bytes even if Claude appends more turns while the export is running.
+        shutil.copy2(session_info['path'], export_dir / 'raw_messages.jsonl')
+        messages, metadata = parse_jsonl_file(export_dir / 'raw_messages.jsonl')
+        # Prefer the filename-based ID over the JSONL-internal sessionId.
+        metadata['session_id'] = session_id
+        msg_meta = extract_message_metadata(messages)
+        return _write_export(export_dir, session_info, project_path, messages, metadata, msg_meta,
+                             session_id=session_id, slug=msg_meta['slug'], export_name=export_name, mode=mode)
+    except BaseException:
+        # Never leave a half-written export behind (it would look importable but is not)
+        shutil.rmtree(export_dir, ignore_errors=True)
+        raise
 
+
+def _write_export(export_dir: Path, session_info: dict, project_path: Path, messages: list,
+                  metadata: dict, msg_meta: dict, *, session_id: str, slug, export_name: str,
+                  mode: str) -> tuple[Path, dict | None]:
+    """Write every file of the export into ``export_dir``."""
     # Write legacy files (both modes)
-    print("\U0001f4dd Writing legacy files...")
-    _write_legacy_files(export_dir, session_info['path'], messages, metadata)
+    info("\U0001f4dd Writing legacy files...")
+    _write_legacy_files(export_dir, messages, metadata)
 
     if mode == 'classic':
         return export_dir, None
@@ -159,7 +215,7 @@ def export_session(session_info: dict, project_path: str | Path,
     # =========================================================================
     # Portable mode: collect and write enhanced structure
     # =========================================================================
-    print("\U0001f4e6 Collecting session data...")
+    info("\U0001f4e6 Collecting session data...")
 
     # The claude project dir is the parent of the session file
     # (e.g., ~/.claude/projects/-home-user-project/)
@@ -182,7 +238,7 @@ def export_session(session_info: dict, project_path: str | Path,
     }
 
     # Collect project config
-    print("\U0001f4e6 Collecting project config...")
+    info("\U0001f4e6 Collecting project config...")
     config_files = collect_project_config(project_path)
 
     # Generate manifest
@@ -192,13 +248,13 @@ def export_session(session_info: dict, project_path: str | Path,
     )
 
     # Write session data
-    print("\U0001f4dd Writing session data...")
+    info("\U0001f4dd Writing session data...")
 
     session_dir = export_dir / 'session'
     session_dir.mkdir(exist_ok=True)
 
     # Main session
-    shutil.copy2(session_info['path'], session_dir / 'main.jsonl')
+    shutil.copy2(export_dir / 'raw_messages.jsonl', session_dir / 'main.jsonl')
 
     # File history
     _copy_files_to_dir(file_history, session_dir / 'file-history',
@@ -215,9 +271,9 @@ def export_session(session_info: dict, project_path: str | Path,
     else:
         write_empty_marker(mirror_dir, "No per-session directory for this session.")
     if history_lines:
-        with open(session_dir / 'history.jsonl', 'w', encoding='utf-8') as f:
+        with open(session_dir / 'history.jsonl', 'w', encoding='utf-8', newline='') as f:
             for record in history_lines:
-                f.write(json.dumps(record, ensure_ascii=False) + '\n')
+                f.write(json_line(record) + '\n')
 
     # Session env
     session_env_dir = session_dir / 'session-env'
@@ -230,7 +286,7 @@ def export_session(session_info: dict, project_path: str | Path,
         write_empty_marker(session_env_dir, "No session environment data.")
 
     # Write config snapshot
-    print("\U0001f4dd Writing config snapshot...")
+    info("\U0001f4dd Writing config snapshot...")
 
     config_dir = export_dir / 'config'
     config_dir.mkdir(exist_ok=True)
@@ -244,7 +300,7 @@ def export_session(session_info: dict, project_path: str | Path,
     ]
 
     for config_key, subdir, empty_msg in _CONFIG_SNAPSHOT_TYPES:
-        _copy_files_to_dir(config_files[config_key], config_dir / subdir, empty_msg)
+        _copy_config_tree(config_files[config_key], config_dir / subdir, empty_msg)
 
     if config_files['settings']:
         shutil.copy2(config_files['settings'], config_dir / 'settings.json')
@@ -257,19 +313,20 @@ def export_session(session_info: dict, project_path: str | Path,
         (config_dir / 'CLAUDE.md').write_text('# No CLAUDE.md\n\nNo CLAUDE.md file in project.\n', encoding='utf-8')
 
     # Write trajectory, manifest, and RENDERED.md
-    print("\U0001f4dd Writing trajectory.json...")
+    info("\U0001f4dd Writing trajectory.json...")
     trajectory = format_trajectory(
         messages, metadata, msg_meta,
-        agent_sessions=agent_sessions,
+        agent_sessions={agent_id: mirror_dir / source.relative_to(session_dir_root)
+                        for agent_id, source in agent_sessions.items()},
     )
     write_json(export_dir / 'trajectory.json', trajectory)
 
-    print("\U0001f4dd Writing manifest and RENDERED.md...")
+    info("\U0001f4dd Writing manifest and RENDERED.md...")
     write_json(export_dir / '.ccsession-manifest.json', manifest)
 
     rendered_md = generate_rendered_markdown(messages, metadata, manifest)
     rendered_path = export_dir / 'RENDERED.md'
-    with open(rendered_path, 'w', encoding='utf-8') as f:
+    with open(rendered_path, 'w', encoding='utf-8', errors='replace') as f:
         f.write(rendered_md)
 
     return export_dir, manifest

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import copy
-from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 
 from ccsession.importing.remap import RemapPlan, build_remap_plan, most_common_cwd, remap_record, remap_records
 
@@ -21,7 +21,7 @@ def _plan(uuid_map=None, old_project=OLD_PROJECT):
         main_records=[], agent_records_by_id={},
         old_session_id=OLD_SID, new_session_id=NEW_SID,
         old_project_path=old_project, new_project_path=NEW_PROJECT,
-        new_session_dir=Path(NEW_SESSION_DIR), new_file_history_dir=Path(NEW_FILE_HISTORY),
+        new_session_dir=PurePosixPath(NEW_SESSION_DIR), new_file_history_dir=PurePosixPath(NEW_FILE_HISTORY),
         regenerate_ids=False,
     ).path_rules
     return RemapPlan(old_session_id=OLD_SID, new_session_id=NEW_SID, uuid_map=uuid_map or {}, path_rules=rules)
@@ -84,7 +84,7 @@ def test_agent_ids_are_never_rewritten():
     plan = build_remap_plan(main_records=[{"uuid": "u1"}], agent_records_by_id={AGENT: [{"uuid": "s1", "agentId": AGENT}]},
                             old_session_id=OLD_SID, new_session_id=NEW_SID,
                             old_project_path=OLD_PROJECT, new_project_path=NEW_PROJECT,
-                            new_session_dir=Path(NEW_SESSION_DIR), new_file_history_dir=Path(NEW_FILE_HISTORY),
+                            new_session_dir=PurePosixPath(NEW_SESSION_DIR), new_file_history_dir=PurePosixPath(NEW_FILE_HISTORY),
                             regenerate_ids=True)
     main = {"type": "user", "sessionId": OLD_SID, "message": {"role": "user", "content": "<task-id>" + AGENT + "</task-id>"},
             "toolUseResult": {"agentId": AGENT, "status": "async_launched"}}
@@ -119,9 +119,9 @@ def test_session_dir_and_file_history_paths_follow_the_new_session():
     delta = {"type": "file-history-delta", "backup": f"/Users/old/.claude/file-history/{OLD_SID}/160c@v3"}
 
     out = remap_record(record, plan)
-    assert out["toolUseResult"]["persistedOutputPath"] == f"{Path(NEW_SESSION_DIR)}/tool-results/b7.txt"
-    assert out["toolUseResult"]["transcriptDir"] == str(Path(NEW_SESSION_DIR))
-    assert remap_record(delta, plan)["backup"] == f"{Path(NEW_FILE_HISTORY)}/160c@v3"
+    assert out["toolUseResult"]["persistedOutputPath"] == f"{PurePosixPath(NEW_SESSION_DIR)}/tool-results/b7.txt"
+    assert out["toolUseResult"]["transcriptDir"] == str(PurePosixPath(NEW_SESSION_DIR))
+    assert remap_record(delta, plan)["backup"] == f"{PurePosixPath(NEW_FILE_HISTORY)}/160c@v3"
 
 
 def test_message_content_is_never_touched():
@@ -142,7 +142,7 @@ def test_build_plan_assigns_fresh_ids_to_every_uuid():
     plan = build_remap_plan(main_records=main, agent_records_by_id=agents,
                             old_session_id=OLD_SID, new_session_id=NEW_SID,
                             old_project_path=OLD_PROJECT, new_project_path=NEW_PROJECT,
-                            new_session_dir=Path(NEW_SESSION_DIR), new_file_history_dir=Path(NEW_FILE_HISTORY),
+                            new_session_dir=PurePosixPath(NEW_SESSION_DIR), new_file_history_dir=PurePosixPath(NEW_FILE_HISTORY),
                             regenerate_ids=True)
     assert set(plan.uuid_map) == {"u1", "u2", "s1", "s2"}
     assert len(set(plan.uuid_map.values())) == 4 and not set(plan.uuid_map.values()) & set(plan.uuid_map)
@@ -152,7 +152,7 @@ def test_preserve_mode_keeps_ids_and_only_relocates_paths():
     plan = build_remap_plan(main_records=[{"uuid": "u1"}], agent_records_by_id={AGENT: [{"uuid": "s1"}]},
                             old_session_id=OLD_SID, new_session_id=OLD_SID,
                             old_project_path=OLD_PROJECT, new_project_path=NEW_PROJECT,
-                            new_session_dir=Path(NEW_SESSION_DIR), new_file_history_dir=Path(NEW_FILE_HISTORY),
+                            new_session_dir=PurePosixPath(NEW_SESSION_DIR), new_file_history_dir=PurePosixPath(NEW_FILE_HISTORY),
                             regenerate_ids=False)
     out = remap_record({"uuid": "u1", "sessionId": OLD_SID, "cwd": OLD_PROJECT, "agentId": AGENT}, plan)
     assert out == {"uuid": "u1", "sessionId": OLD_SID, "cwd": NEW_PROJECT, "agentId": AGENT}
@@ -166,10 +166,12 @@ def test_most_common_cwd_ignores_records_without_one():
 
 def test_windows_paths_are_relocated_whatever_the_separator():
     old_root = "C:\\Users\\me\\proj"
+    session_dir = PureWindowsPath("D:/claude/projects/proj") / NEW_SID
+    file_history_dir = PureWindowsPath("D:/claude/file-history") / NEW_SID
     plan = build_remap_plan(main_records=[], agent_records_by_id={},
                             old_session_id=OLD_SID, new_session_id=NEW_SID,
                             old_project_path=old_root, new_project_path="D:\\work\\proj",
-                            new_session_dir=Path(NEW_SESSION_DIR), new_file_history_dir=Path(NEW_FILE_HISTORY),
+                            new_session_dir=session_dir, new_file_history_dir=file_history_dir,
                             regenerate_ids=False)
     record = {"type": "user", "cwd": old_root,
               "toolUseResult": {"filePath": old_root + "\\calc\\ops.py",
@@ -178,5 +180,58 @@ def test_windows_paths_are_relocated_whatever_the_separator():
     out = remap_record(record, plan)
     assert out["cwd"] == "D:\\work\\proj"
     assert out["toolUseResult"]["filePath"] == "D:\\work\\proj\\calc\\ops.py"
-    assert out["toolUseResult"]["persistedOutputPath"] == str(Path(NEW_SESSION_DIR)) + "\\tool-results\\b7.txt"
+    assert out["toolUseResult"]["persistedOutputPath"] == str(session_dir / "tool-results" / "b7.txt")
     assert out["attachment"]["snapshot"]["workingDirectory"] == "C:\\Users\\me\\projx", "a sibling dir is not under the project"
+
+
+def test_windows_paths_imported_into_posix_use_target_separators():
+    plan = build_remap_plan(main_records=[], agent_records_by_id={},
+                            old_session_id=OLD_SID, new_session_id=NEW_SID,
+                            old_project_path="C:\\Users\\me\\proj", new_project_path=NEW_PROJECT,
+                            new_session_dir=PurePosixPath(NEW_SESSION_DIR), new_file_history_dir=PurePosixPath(NEW_FILE_HISTORY),
+                            regenerate_ids=False)
+    for original in ("C:\\Users\\me\\proj\\calc\\ops.py", "C:/Users/me/proj/calc/ops.py"):
+        assert remap_record({"filePath": original}, plan)["filePath"] == NEW_PROJECT + "/calc/ops.py"
+    assert remap_record({"backup": "C:\\Users\\me\\.claude\\file-history\\" + OLD_SID + "\\160c@v3"}, plan)["backup"] == NEW_FILE_HISTORY + "/160c@v3"
+
+
+def test_posix_paths_imported_into_windows_use_target_separators():
+    session_dir = PureWindowsPath("D:/claude/projects/proj") / NEW_SID
+    file_history_dir = PureWindowsPath("D:/claude/file-history") / NEW_SID
+    plan = build_remap_plan(main_records=[], agent_records_by_id={},
+                            old_session_id=OLD_SID, new_session_id=NEW_SID,
+                            old_project_path=OLD_PROJECT, new_project_path="D:\\work\\proj",
+                            new_session_dir=session_dir, new_file_history_dir=file_history_dir,
+                            regenerate_ids=False)
+    assert remap_record({"filePath": OLD_PROJECT + "/calc/ops.py"}, plan)["filePath"] == "D:\\work\\proj\\calc\\ops.py"
+    original_output = f"/home/old/.claude/projects/proj/{OLD_SID}/tool-results/b7.txt"
+    assert remap_record({"persistedOutputPath": original_output}, plan)["persistedOutputPath"] == str(session_dir / "tool-results" / "b7.txt")
+
+
+def test_posix_root_paths_relocate_without_a_double_separator():
+    plan = _plan(old_project="/")
+    assert remap_record({"cwd": "/", "filePath": "/calc/ops.py"}, plan) == {
+        "cwd": NEW_PROJECT, "filePath": NEW_PROJECT + "/calc/ops.py"}
+
+
+def test_posix_paths_preserve_literal_backslashes():
+    plan = build_remap_plan(main_records=[], agent_records_by_id={},
+                            old_session_id=OLD_SID, new_session_id=NEW_SID,
+                            old_project_path="/old/proj\\", new_project_path="/new/proj\\",
+                            new_session_dir=PurePosixPath(NEW_SESSION_DIR), new_file_history_dir=PurePosixPath(NEW_FILE_HISTORY),
+                            regenerate_ids=False)
+    assert remap_record({"cwd": "/old/proj\\", "filePath": "/old/proj\\/calc\\ops.py"}, plan) == {
+        "cwd": "/new/proj\\", "filePath": "/new/proj\\/calc\\ops.py"}
+    assert remap_record({"filePath": "/old/proj\\other/file"}, plan)["filePath"] == "/old/proj\\other/file"
+
+
+def test_windows_paths_with_a_drive_implicit_root_use_windows_separators():
+    session_dir = PureWindowsPath("/config/projects/new")
+    plan = build_remap_plan(main_records=[], agent_records_by_id={},
+                            old_session_id=OLD_SID, new_session_id=NEW_SID,
+                            old_project_path="C:\\work\\proj", new_project_path=PureWindowsPath("/new/project"),
+                            new_session_dir=session_dir, new_file_history_dir=PureWindowsPath("/config/file-history/new"),
+                            regenerate_ids=False)
+    original_output = "C:\\config\\projects\\proj\\" + OLD_SID + "\\tool-results\\b7.txt"
+    assert remap_record({"persistedOutputPath": original_output}, plan)["persistedOutputPath"] == str(session_dir / "tool-results" / "b7.txt")
+    assert remap_record({"filePath": "C:/work/proj/src/main.py"}, plan)["filePath"] == "\\new\\project\\src\\main.py"

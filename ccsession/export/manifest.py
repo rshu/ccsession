@@ -7,6 +7,7 @@ from pathlib import Path
 from ccsession import CCSESSION_VERSION
 from ccsession.constants import MANIFEST_LAYOUT_VERSION
 from ccsession.utils import utc_now_iso, parse_iso_timestamp
+from ccsession.export.collectors import CONFIG_TYPE_NAMES
 from ccsession.export.formatters import format_message_markdown
 
 
@@ -56,11 +57,8 @@ def generate_manifest(session_id: str, slug: str | None, export_name: str, metad
         },
 
         "config_snapshot": {
-            "commands": [f"config/commands/{Path(f).name}" for f in config_files.get('commands', [])],
-            "skills": [f"config/skills/{Path(f).name}" for f in config_files.get('skills', [])],
-            "hooks": [f"config/hooks/{Path(f).name}" for f in config_files.get('hooks', [])],
-            "agents": [f"config/agents/{Path(f).name}" for f in config_files.get('agents', [])],
-            "rules": [f"config/rules/{Path(f).name}" for f in config_files.get('rules', [])],
+            **{name: [f"config/{name}/{cf.relative}" for cf in config_files.get(name, [])]
+               for name in CONFIG_TYPE_NAMES},
             "settings": "config/settings.json" if config_files.get('settings') else None,
             "claude_md": "config/CLAUDE.md" if config_files.get('claude_md') else None
         },

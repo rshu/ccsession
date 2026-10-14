@@ -1,0 +1,8 @@
+# The sdist carries a runnable test suite: setuptools includes tests/test*.py on its
+# own, but not conftest.py or the sanitized transcript fixture the round-trip test needs.
+include CHANGELOG.md
+include LICENSE
+include README.md
+graft tests
+graft scripts
+global-exclude __pycache__ *.py[cod] .DS_Store
