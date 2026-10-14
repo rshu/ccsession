@@ -9,6 +9,7 @@ from typing import Iterator
 
 from ccsession.importing.remap import RemapPlan, remap_record, remap_records
 from ccsession.importing.session_io import read_session_jsonl
+from ccsession.importing.validation import resolve_export_path
 from ccsession.paths import get_history_file
 
 _EMPTY_MARKER = '_empty'
@@ -64,13 +65,14 @@ def import_history(export_path: Path, manifest: dict, plan: RemapPlan,
     """Append the session's prompt-history records to ``<claude-dir>/history.jsonl``.
 
     Records are rewritten to the new session id and project path. A record whose
-    ``sessionId`` and ``timestamp`` already exist in the history file is skipped so a
-    repeated import does not duplicate prompts. Returns the number of records added.
+    ``sessionId``, ``timestamp`` and ``display`` already exist in the history file is
+    skipped so a repeated import does not duplicate prompts. Returns the number of
+    records added.
     """
     relative = manifest.get('session_data', {}).get('history')
     if not relative:
         return 0
-    source = export_path / relative
+    source = resolve_export_path(export_path, relative)
     if not source.is_file():
         return 0
 
@@ -78,7 +80,7 @@ def import_history(export_path: Path, manifest: dict, plan: RemapPlan,
     existing: set = set()
     if history_file.is_file():
         for record in read_session_jsonl(history_file):
-            existing.add((record.get('sessionId'), record.get('timestamp')))
+            existing.add(_history_key(record))
 
     added = 0
     history_file.parent.mkdir(parents=True, exist_ok=True)
@@ -87,7 +89,7 @@ def import_history(export_path: Path, manifest: dict, plan: RemapPlan,
             rewritten = remap_record(record, plan)
             rewritten['sessionId'] = plan.new_session_id
             rewritten['project'] = str(new_project_path)
-            key = (rewritten['sessionId'], rewritten.get('timestamp'))
+            key = _history_key(rewritten)
             if key in existing:
                 continue
             existing.add(key)
@@ -101,7 +103,7 @@ def _iter_sources(export_path: Path, manifest: dict) -> Iterator[tuple]:
     session_data = manifest.get('session_data', {})
     mirror = session_data.get('session_dir')
     if mirror:
-        root = export_path / mirror
+        root = resolve_export_path(export_path, mirror)
         if root.is_dir():
             for source in sorted(p for p in root.rglob('*') if p.is_file()):
                 if source.name != _EMPTY_MARKER:
@@ -109,7 +111,7 @@ def _iter_sources(export_path: Path, manifest: dict) -> Iterator[tuple]:
         return
     # Layout 1 (ccsession 2.0.0): only sub-agent transcripts, under session/agents/
     for relative in session_data.get('agent_sessions', []):
-        source = export_path / relative
+        source = resolve_export_path(export_path, relative)
         if source.is_file() and source.name != _EMPTY_MARKER:
             yield source, Path('subagents') / source.name
 
@@ -129,3 +131,7 @@ def _write_jsonl(records: list, path: Path) -> None:
     with open(path, 'w', encoding='utf-8') as f:
         for record in records:
             f.write(json.dumps(record, ensure_ascii=False) + '\n')
+
+
+def _history_key(record: dict) -> tuple:
+    return (record.get('sessionId'), record.get('timestamp'), record.get('display'))

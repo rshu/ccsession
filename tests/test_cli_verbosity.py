@@ -107,3 +107,12 @@ class TestExportModeFlag:
             capture_output=True, text=True
         )
         assert 'unrecognized arguments' in result.stderr, "--format should be rejected"
+
+
+class TestExportNotFoundMessage:
+    def test_not_found_message_names_the_configured_projects_root(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+        (tmp_path / "cfg" / "projects").mkdir(parents=True)
+        from ccsession.cli import main
+        assert main(["export", "--session-id", "00000000-0000-0000-0000-000000000000"]) == 1
+        assert str(tmp_path / "cfg" / "projects") in capsys.readouterr().err

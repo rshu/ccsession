@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ccsession.paths import get_projects_dir, get_import_storage_dir, get_file_history_dir
-from ccsession.importing.validation import validate_manifest, check_version_compatibility
+from ccsession.importing.validation import validate_manifest, check_version_compatibility, resolve_export_path
 from ccsession.importing.uuids import generate_new_session_id
 from ccsession.importing.remap import build_remap_plan, most_common_cwd, remap_records
 from ccsession.importing.snapshot import create_snapshot
@@ -77,6 +77,13 @@ def import_session(export_path: Path, project_path: Path | None = None,
         new_session_id = generate_new_session_id()
         target_session_path = target_dir / f'{new_session_id}.jsonl'
 
+    target_session_dir = target_dir / new_session_id
+    if target_session_dir.exists() and any(target_session_dir.iterdir()):
+        raise FileExistsError(
+            f"Session directory already exists and is not empty: {target_session_dir}\n"
+            "Import aborted to prevent mixing two sessions' files."
+        )
+
     print(f"\n\U0001f4e5 Importing as session: {new_session_id}")
     if old_session_id != new_session_id:
         print(f"   (Original: {old_session_id})")
@@ -98,7 +105,7 @@ def import_session(export_path: Path, project_path: Path | None = None,
 
     source_session_path = None
     if main_session_path:
-        source_session_path = export_path / main_session_path
+        source_session_path = resolve_export_path(export_path, main_session_path)
     if not source_session_path or not source_session_path.exists():
         source_session_path = export_path / 'raw_messages.jsonl'
 
@@ -127,7 +134,7 @@ def import_session(export_path: Path, project_path: Path | None = None,
     # 6. Write the session directory first: a populated target (possible with
     # --preserve-session-id) must abort before the transcript is written.
     print(f"\n\U0001f4be Writing session files...")
-    dir_result = import_session_dir(export_path, manifest, target_dir / new_session_id, plan)
+    dir_result = import_session_dir(export_path, manifest, target_session_dir, plan)
     if dir_result.files:
         print(f"   \u2713 Session directory: {dir_result.files} files "
               f"({dir_result.agents} sub-agent transcripts)")
@@ -226,7 +233,7 @@ def _read_agent_transcripts(export_path: Path, manifest: dict) -> dict[str, list
     """Sub-agent transcripts in the export, keyed by agent id, for id-map building."""
     agents: dict[str, list[dict]] = {}
     for relative in manifest.get('session_data', {}).get('agent_sessions', []):
-        path = export_path / relative
+        path = resolve_export_path(export_path, relative)
         name = path.name
         if path.is_file() and name.startswith('agent-') and name.endswith('.jsonl'):
             agents[name[len('agent-'):-len('.jsonl')]] = read_session_jsonl(path)

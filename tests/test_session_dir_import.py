@@ -128,3 +128,35 @@ def test_every_jsonl_under_subagents_is_treated_as_a_transcript(tmp_path):
     import_session_dir(export, {"session_data": {"session_dir": "session/session-dir/"}}, target, _plan())
     restored = json.loads((target / "subagents" / "agent-compact-abc.jsonl").read_text(encoding="utf-8"))
     assert restored == {"uuid": "n1", "sessionId": NEW_SID}
+
+
+@pytest.mark.parametrize("mirror", ["../sibling/", "/etc/", "session/../../sibling/"])
+def test_manifest_paths_outside_the_export_are_refused(tmp_path, mirror):
+    export = tmp_path / "export"
+    (export / "session").mkdir(parents=True)
+    (tmp_path / "sibling").mkdir()
+    (tmp_path / "sibling" / "secret.txt").write_text("x", encoding="utf-8")
+    target = tmp_path / "target" / NEW_SID
+    with pytest.raises(ImportError, match="outside the export"):
+        import_session_dir(export, {"session_data": {"session_dir": mirror}}, target, _plan())
+    assert not target.exists()
+
+
+def test_history_path_outside_the_export_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    export = tmp_path / "export"
+    export.mkdir()
+    (tmp_path / "history.jsonl").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(ImportError, match="outside the export"):
+        import_history(export, {"session_data": {"history": "../history.jsonl"}}, _plan(), "/new/proj")
+
+
+def test_history_records_without_timestamp_are_not_collapsed(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    export = tmp_path / "export"
+    (export / "session").mkdir(parents=True)
+    rows = [{"display": "one", "project": "/old", "sessionId": OLD_SID}, {"display": "two", "project": "/old", "sessionId": OLD_SID}]
+    (export / "session" / "history.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    manifest = {"session_data": {"history": "session/history.jsonl"}}
+    assert import_history(export, manifest, _plan(), "/new") == 2
+    assert import_history(export, manifest, _plan(), "/new") == 0

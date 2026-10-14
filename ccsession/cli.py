@@ -7,6 +7,7 @@ import argparse
 from pathlib import Path
 
 from ccsession.output import info, detail, error, success, set_verbosity, QUIET, NORMAL, VERBOSE
+from ccsession.paths import get_projects_root
 
 
 def cmd_export(args: argparse.Namespace) -> int:
@@ -21,7 +22,7 @@ def cmd_export(args: argparse.Namespace) -> int:
         session_to_export = find_session_by_id(args.session_id)
         if not session_to_export:
             error(f"\u274c Session not found: {args.session_id}")
-            error("   Searched all projects in ~/.claude/projects/")
+            error(f"   Searched all projects in {get_projects_root()}")
             return 1
         info(f"\U0001f4c2 Found session in project: {session_to_export.get('project_dir', 'unknown')}")
     else:
@@ -150,7 +151,8 @@ def run_command(fn, args: argparse.Namespace) -> int:
         return 1
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point; ``argv`` defaults to ``sys.argv[1:]``."""
     parser = argparse.ArgumentParser(
         prog='ccsession',
         description='Export, import, and restore Claude Code sessions',
@@ -194,7 +196,7 @@ def main() -> int:
     p_restore.add_argument('--yes', action='store_true',
                            help='Skip confirmation prompt (DANGEROUS)')
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Set verbosity before dispatching
     if args.quiet:

@@ -360,3 +360,40 @@ def test_import_prints_a_resume_hint_with_the_new_id(tmp_path, monkeypatch, caps
     out = capsys.readouterr().out
     assert f"claude --resume {summary['session_id']}" in out
     assert "Session: None" not in out
+
+
+def test_preserved_import_into_a_populated_session_dir_aborts_before_touching_the_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    sid, agent_id = "7f6738b0-d2cb-44ae-a806-09860af58e1f", "a9ba8b4d8b37efc78"
+    export = tmp_path / "export"
+    _export_with_agent(export, sid, agent_id, "/old/proj")
+    project = (tmp_path / "newproj").resolve()
+    project.mkdir()
+    populated = get_projects_dir(project) / sid / "subagents"
+    populated.mkdir(parents=True)
+    (populated / "agent-x.jsonl").write_text("{}\n", encoding="utf-8")
+    previous_snapshot = tmp_path / ".claude-session-imports" / "pre-import-snapshot"
+    previous_snapshot.mkdir(parents=True)
+    (previous_snapshot / "snapshot_info.json").write_text('{"timestamp": "2026-01-01T00:00:00Z"}', encoding="utf-8")
+
+    with patch("ccsession.importing.importer.check_version_compatibility", return_value=(True, None)):
+        with pytest.raises(FileExistsError, match="already exists"):
+            import_session(export, project_path=project, preserve_session_id=True, non_interactive=True)
+
+    assert (previous_snapshot / "snapshot_info.json").read_text(encoding="utf-8").startswith('{"timestamp": "2026-01-01')
+    assert not (get_projects_dir(project) / f"{sid}.jsonl").exists()
+
+
+def test_import_refuses_a_main_session_path_outside_the_export(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    export = tmp_path / "export"
+    _export_with_agent(export, "7f6738b0-d2cb-44ae-a806-09860af58e1f", "a9ba8b4d8b37efc78", "/old/proj")
+    manifest = json.loads((export / ".ccsession-manifest.json").read_text(encoding="utf-8"))
+    manifest["session_data"]["main_session"] = "../outside.jsonl"
+    (export / ".ccsession-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (tmp_path / "outside.jsonl").write_text("{}\n", encoding="utf-8")
+    project = (tmp_path / "newproj").resolve()
+    project.mkdir()
+    with patch("ccsession.importing.importer.check_version_compatibility", return_value=(True, None)):
+        with pytest.raises(ImportError, match="outside the export"):
+            import_session(export, project_path=project, non_interactive=True)

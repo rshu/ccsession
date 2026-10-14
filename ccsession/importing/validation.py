@@ -106,3 +106,23 @@ def _parse_version(output: str) -> str | None:
     """
     match = _VERSION_RE.search(output)
     return match.group(0) if match else None
+
+
+def resolve_export_path(export_path: Path, relative: str) -> Path:
+    """Resolve a manifest-supplied relative path and prove it stays inside the export.
+
+    Exports are meant to be shared, so a manifest is untrusted input: ``../`` or an
+    absolute path must not let an import read or copy anything outside the export
+    directory.
+
+    Raises:
+        ImportError: if the path escapes ``export_path``.
+    """
+    root = Path(export_path).resolve()
+    candidate = (root / relative).resolve()
+    if candidate != root and root not in candidate.parents:
+        raise ImportError(
+            f"Manifest path {relative!r} points outside the export directory {root}.\n"
+            "The export may be corrupted or tampered with."
+        )
+    return candidate
