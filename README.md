@@ -1,9 +1,9 @@
 # ccsession
 
 [![CI](https://github.com/rshu/ccsession/actions/workflows/ci.yml/badge.svg)](https://github.com/rshu/ccsession/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/ccsession-cli.svg)](https://pypi.org/project/ccsession-cli/)
-[![Python versions](https://img.shields.io/pypi/pyversions/ccsession-cli.svg)](https://pypi.org/project/ccsession-cli/)
-[![Downloads](https://img.shields.io/pypi/dm/ccsession-cli.svg)](https://pypistats.org/packages/ccsession-cli)
+[![PyPI](https://img.shields.io/pypi/v/ccsession-cli?cacheSeconds=3600)](https://pypi.org/project/ccsession-cli/)
+[![Python versions](https://img.shields.io/pypi/pyversions/ccsession-cli?cacheSeconds=3600)](https://pypi.org/project/ccsession-cli/)
+[![Downloads](https://img.shields.io/pypi/dm/ccsession-cli?cacheSeconds=3600)](https://pypistats.org/packages/ccsession-cli)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Export, import, and restore Claude Code sessions.
