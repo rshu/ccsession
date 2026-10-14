@@ -37,11 +37,17 @@ def cmd_export(args: argparse.Namespace) -> int:
 
         session_to_export = select_session(sessions, project_dir=cwd)
 
+    # A session exported by id may belong to another project; its config snapshot
+    # and repo_path must describe that project, not the shell's cwd.
+    project_path = session_to_export.get('project_path') or cwd
+    if args.session_id and project_path != cwd:
+        info(f"\U0001f4c2 Session project: {project_path}")
+
     info(f"\n\U0001f4e4 Exporting session file: {session_to_export['session_id'][:8]}...")
 
     output_dir = Path(args.output_dir) if args.output_dir else None
     export_path, manifest = export_session(
-        session_to_export, cwd,
+        session_to_export, project_path,
         export_name=args.export_name,
         output_dir=output_dir,
         mode=args.mode,

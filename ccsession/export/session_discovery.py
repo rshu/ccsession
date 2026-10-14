@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
@@ -98,6 +99,27 @@ def find_project_sessions(project_path: str | Path) -> list[dict]:
     return sorted(jsonl_files, key=lambda x: x['mtime'], reverse=True)
 
 
+def read_session_cwd(session_path: Path) -> str | None:
+    """Return the working directory recorded in a transcript, or None.
+
+    Scans records in order and stops at the first one carrying ``cwd``; bad
+    lines are skipped so a truncated final line cannot hide the answer.
+    """
+    try:
+        with open(session_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cwd = record.get('cwd') if isinstance(record, dict) else None
+                if isinstance(cwd, str) and cwd:
+                    return cwd
+    except OSError:
+        return None
+    return None
+
+
 def find_session_by_id(session_id: str) -> dict | None:
     """Find a session by ID across all projects.
 
@@ -126,6 +148,7 @@ def find_session_by_id(session_id: str) -> dict | None:
                     'mtime': stat.st_mtime,
                     'session_id': file.stem,
                     'project_dir': project_dir.name,
+                    'project_path': read_session_cwd(file),
                 })
 
     if not matches:
