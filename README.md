@@ -67,6 +67,11 @@ ccsession export --output-dir /path/to/output --export-name my-session
 ccsession export --mode classic
 ```
 
+Each export captures the main transcript once so its raw, structured, and rendered
+files agree even while the session is active. An existing export directory is
+refused; choose a new `--export-name` to keep both exports. Automatic names include
+microseconds to allow repeated exports within the same second.
+
 ## Import
 
 ```bash
@@ -83,8 +88,10 @@ exist yet under `<project>/.claude/` and appends an import note to `CLAUDE.md`.
 Existing files are never overwritten: config files and file-history snapshots that
 are already there are skipped. `settings.json` and `CLAUDE.md` from the export are
 not restored (hook scripts copied into `.claude/hooks/` therefore stay inactive until
-you wire them up). Every path named by the manifest is confined to the export
-directory, and with `--preserve-session-id` the session id must be a lowercase UUID.
+you wire them up). Every path named by the manifest, including files inside the
+session-directory mirror, is confined to the export directory. Imports refuse
+symlinked session and file-history destinations and skip config files beneath
+symlinked directories. With `--preserve-session-id` the session id must be a lowercase UUID.
 Everything is read and checked before the pre-import snapshot is taken, nothing is
 written before it, and every write is first recorded in the snapshot's journal. The
 project directory must exist. Paths
@@ -126,7 +133,9 @@ symlink, the link. The plan is printed before anything is deleted, and a restore
 refuses to run if the snapshot is malformed, was taken for another Claude config
 directory or names anything other than one of its project directories. The project
 directory is rebuilt next to itself and swapped in, so a restore that fails leaves
-it untouched; rerun `ccsession restore --restore` after fixing the cause (imports
+it untouched; a busy history file keeps the snapshot available, and completed
+cleanup steps are recorded so a retry preserves files recreated after those steps.
+Rerun `ccsession restore --restore` after fixing the cause (imports
 are refused until that restore has finished). One snapshot is kept, of the most
 recent import, and a new one replaces it only once it is complete; an import that
 fails part-way, however it ends, has journaled what it wrote, so the same restore

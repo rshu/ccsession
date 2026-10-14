@@ -219,3 +219,15 @@ def test_the_snapshot_is_private(tmp_path, monkeypatch):
     assert mode(snapshot_dir / "snapshot_info.json") == 0o600
     assert mode(log_path.parent) == 0o700 and mode(log_path) == 0o600
     assert mode(storage / "index.json") == 0o600
+
+
+def test_journal_recovers_after_a_torn_last_line(tmp_path):
+    from ccsession.importing.snapshot import ImportJournal, read_journal
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    journal = snapshot / "journal.jsonl"
+    journal.write_bytes(b'{"kind":"history_line","line":"unfinished')
+
+    ImportJournal(snapshot).record("restore_step_done", step="history", result=1)
+
+    assert read_journal(snapshot) == [{"kind": "restore_step_done", "step": "history", "result": 1}]

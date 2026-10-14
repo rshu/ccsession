@@ -9,6 +9,7 @@ from ccsession.export.trajectory import (
     _transform_turn,
     _compute_statistics,
     format_trajectory,
+    load_agent_meta,
 )
 
 
@@ -614,3 +615,9 @@ class TestLosslessTrajectory:
         result = format_trajectory([_user_msg(uuid="u1", text="hi")], self.METADATA, self.MSG_META)
         assert result["statistics"]["cost_usd"] is None
         assert result["format_version"] == "1.1"
+
+
+def test_agent_meta_with_invalid_utf8_is_treated_as_unreadable(tmp_path):
+    agent = tmp_path / 'agent-a.jsonl'
+    agent.with_suffix('.meta.json').write_bytes(b'{"description":"\xff"}')
+    assert load_agent_meta(agent) == {}

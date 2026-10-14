@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from ccsession.export.parsers import parse_jsonl_file
+from ccsession.export.parsers import parse_jsonl_file, extract_message_metadata
 
 
 def test_non_object_json_lines_are_skipped(tmp_path):
@@ -38,3 +38,29 @@ def test_a_message_field_that_is_not_an_object_does_not_crash_the_parse(tmp_path
     messages, metadata = parse_jsonl_file(path)
 
     assert len(messages) == 3 and metadata["user_messages"] == 1
+
+
+def test_time_bounds_compare_instants_instead_of_raw_iso_strings(tmp_path):
+    path = tmp_path / 's.jsonl'
+    rows = [{'timestamp': '2026-10-14T01:00:00+01:00'},
+            {'timestamp': '2026-10-14T00:30:00Z'}, {'timestamp': 'not-a-date'}]
+    path.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
+    messages, metadata = parse_jsonl_file(path)
+    assert messages == rows
+    assert metadata['start_time'] == rows[0]['timestamp']
+    assert metadata['end_time'] == rows[1]['timestamp']
+
+
+def test_time_bounds_handle_optional_fractional_seconds(tmp_path):
+    path = tmp_path / 's.jsonl'
+    rows = [{'timestamp': '2026-10-14T00:00:00Z'}, {'timestamp': '2026-10-14T00:00:00.100Z'}]
+    path.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
+    _, metadata = parse_jsonl_file(path)
+    assert metadata['start_time'] == rows[0]['timestamp']
+    assert metadata['end_time'] == rows[1]['timestamp']
+
+
+def test_null_metadata_does_not_hide_later_populated_fields():
+    messages = [{'version': None, 'gitBranch': None, 'slug': None},
+                {'version': '2.1.287', 'gitBranch': 'main', 'slug': 'demo'}]
+    assert extract_message_metadata(messages) == {'version': '2.1.287', 'git_branch': 'main', 'slug': 'demo'}

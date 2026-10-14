@@ -37,9 +37,22 @@ class ImportJournal:
 
     def record(self, kind: str, **fields) -> None:
         line = json_line({'kind': kind, **fields})
+        # A killed process can leave a partial last entry. Keep the next durable
+        # record on its own line so recovery can still read it.
+        needs_separator = False
+        try:
+            with open(self.path, 'rb') as previous:
+                previous.seek(0, os.SEEK_END)
+                if previous.tell():
+                    previous.seek(-1, os.SEEK_END)
+                    needs_separator = previous.read(1) != b'\n'
+        except FileNotFoundError:
+            pass
         # Owner-only: entries can hold copies of prompt-history lines (Claude Code keeps those 0600)
         fd = open_private(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
         with os.fdopen(fd, 'wb') as f:
+            if needs_separator:
+                f.write(b'\n')
             f.write(line.encode('utf-8') + b'\n')
             f.flush()
             os.fsync(f.fileno())

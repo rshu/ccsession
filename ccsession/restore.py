@@ -10,10 +10,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ccsession.constants import MAX_DISPLAY_ITEMS
-from ccsession.history_file import HistoryBusyError, rewrite_lines
+from ccsession.history_file import rewrite_lines
 from ccsession.importing.config import note_variants
 from ccsession.importing.snapshot import (
-    INFO_FILE_NAME, RESTORE_MARKER, SNAPSHOT_DIR_NAME, read_journal, recover_snapshot_slot,
+    INFO_FILE_NAME, RESTORE_MARKER, SNAPSHOT_DIR_NAME, ImportJournal, read_journal, recover_snapshot_slot,
 )
 from ccsession.output import error, info, prompt, success, warn
 from ccsession.paths import get_claude_dir, get_import_storage_dir, get_projects_root, get_snapshot_dir
@@ -98,6 +98,12 @@ def _validated(raw, info_path: Path) -> dict:
         value = raw.get(field)
         if value is not None and (not isinstance(value, dict) or not isinstance(value.get('path'), str)):
             raise _damaged(info_path, f"{field} does not name a path")
+        if value is not None and 'existed' in value and not isinstance(value['existed'], bool):
+            raise _damaged(info_path, f"{field}.existed is not a boolean")
+    if 'backup_exists' in raw and not isinstance(raw['backup_exists'], bool):
+        raise _damaged(info_path, "backup_exists is not a boolean")
+    if 'snapshot_version' in raw and (type(raw['snapshot_version']) is not int or raw['snapshot_version'] < 1):
+        raise _damaged(info_path, "snapshot_version is not a positive integer")
     return raw
 
 
@@ -113,7 +119,8 @@ def _merge_journal(raw: dict, snapshot_dir: Path) -> dict:
     def files(kind: str, summary: list) -> tuple:
         targets: dict = {path: None for path in summary}
         tmps = []
-        done = {e.get('path') for e in journal if e['kind'] == f'{kind}_done'}
+        done = {e['path'] for e in journal
+                if e['kind'] == f'{kind}_done' and isinstance(e.get('path'), str)}
         for e in journal:
             if e['kind'] != kind or not isinstance(e.get('path'), str):
                 continue
@@ -132,6 +139,14 @@ def _merge_journal(raw: dict, snapshot_dir: Path) -> dict:
          *(e['path'] for e in journal if e['kind'] == 'config_dir' and isinstance(e.get('path'), str))]))
     journal_lines = [e['line'] for e in journal if e['kind'] == 'history_line' and isinstance(e.get('line'), str)]
     claude_md_entries = [e for e in journal if e['kind'] == 'claude_md' and isinstance(e.get('note'), str)]
+    restore_steps = {}
+    for entry in journal:
+        step, result = entry.get('step'), entry.get('result')
+        if entry['kind'] != 'restore_step_done':
+            continue
+        if ((step in ('history', 'file_history', 'config') and type(result) is int and result >= 0)
+                or (step == 'claude_md' and (result is None or isinstance(result, str)))):
+            restore_steps[step] = result
     return {
         'config_files': config_files,
         'config_tmp_files': config_tmps,
@@ -142,6 +157,7 @@ def _merge_journal(raw: dict, snapshot_dir: Path) -> dict:
         'created_file_history_files': list(fh_files),
         'appended_history_lines': journal_lines or list(raw.get('appended_history_lines') or []),
         'claude_md_append': claude_md_entries[-1] if claude_md_entries else None,
+        'restore_steps': restore_steps,
     }
 
 
@@ -287,11 +303,19 @@ def _same_dir(a, b) -> bool:
 
 
 def _inside(path, root: Path) -> bool:
-    """``path`` is ``root`` or below it, spelled without '..'."""
+    """``path`` is below ``root``, without '..' or symlinks below the root.
+
+    An imported config directory may have been replaced with a symlink since the
+    import. Lexical containment alone would then delete someone else's files.
+    """
     if _has_dot_dot(path) or not Path(path).is_absolute():
         return False
     p = Path(path)
-    return p == root or root in p.parents
+    if p != root and root not in p.parents:
+        return False
+    return not root.is_symlink() and not any(
+        (root / Path(*p.relative_to(root).parts[:i])).is_symlink()
+        for i in range(1, len(p.relative_to(root).parts) + 1))
 
 
 def _check_claude_dir(snapshot_info: dict) -> None:
@@ -326,6 +350,11 @@ def _check_target_dir(target_dir: Path, snapshot_info: dict) -> None:
             f"under {expected_root}.{hint}\n"
             f"Check {Path(snapshot_info['snapshot_dir']) / INFO_FILE_NAME} before retrying; nothing was changed."
         )
+    if target_dir.is_symlink():
+        raise RuntimeError(
+            f"Refusing to restore: the project directory {target_dir} is a symlink.\n"
+            "Replacing it could change files outside the snapshot's project directory; nothing was changed."
+        )
 
 
 def _check_backup(snapshot_info: dict) -> None:
@@ -335,6 +364,29 @@ def _check_backup(snapshot_info: dict) -> None:
             "Refusing to restore: the snapshot is damaged (it records a backup of the project "
             f"directory, but {expected} is missing or not a directory).\n"
             "Deleting the current content would lose the sessions that existed before the import."
+        )
+
+
+def _check_project_path(snapshot_info: dict) -> None:
+    """Imports record a resolved project path; it must still resolve to itself.
+
+    Checking only ``project/.claude`` misses a project or parent directory replaced
+    with a symlink since import. Its recorded config files and CLAUDE.md would then
+    refer to another project's files, despite looking lexically confined.
+    """
+    recorded = snapshot_info.get('project_path')
+    if not recorded or not Path(recorded).is_absolute():
+        return
+    project = _canonical(recorded)
+    try:
+        resolved = project.resolve()
+    except (OSError, RuntimeError) as e:
+        raise RuntimeError(f"Refusing to restore: the project path {project} cannot be resolved: {e}") from e
+    if os.path.normcase(str(resolved)) != os.path.normcase(str(project)):
+        raise RuntimeError(
+            f"Refusing to restore: the project path {project} has been redirected by a symlink "
+            f"to {resolved}.\n"
+            "Its recorded config files and CLAUDE.md no longer describe the original project; nothing was changed."
         )
 
 
@@ -592,11 +644,10 @@ def _undo_history(snapshot_info: dict) -> int:
             kept.append(raw)
         return kept
 
-    try:
-        return rewrite_lines(expected, decide, remove_if_empty=not history.get('existed'))
-    except HistoryBusyError as e:
-        warn(f"⚠️  {e}; the imported prompt-history lines were left in place")
-        return 0
+    # A busy history file is an unfinished restore. Propagate the failure so the
+    # snapshot remains available for a retry instead of declaring success and
+    # discarding the only record of which lines the import appended.
+    return rewrite_lines(expected, decide, remove_if_empty=not history.get('existed'))
 
 
 def _remove_recorded_files(targets: dict, tmps: list, root: Path, what: str) -> int:
@@ -647,6 +698,9 @@ def _undo_file_history(snapshot_info: dict) -> int:
              "of an imported session")
         return 0
     if not path.is_dir() or path.is_symlink():
+        return 0
+    if path.parent.is_symlink():
+        warn(f"⚠️  Not touching {path}: its file-history parent directory is a symlink")
         return 0
     if not file_history.get('existed'):
         force_rmtree(path)
@@ -735,6 +789,7 @@ def restore_snapshot(force: bool = False) -> dict:
     target_dir = _target_dir(snapshot_info)
     _check_target_dir(target_dir, snapshot_info)
     _check_backup(snapshot_info)
+    _check_project_path(snapshot_info)
 
     backup_path = Path(snapshot_info['backup_path']) if snapshot_info['backup_path'] else None
     plan = _plan_project_dir(target_dir, backup_path)
@@ -765,6 +820,15 @@ def restore_snapshot(force: bool = False) -> dict:
     try:
         # Until the snapshot is removed at the end, a new import must not replace it
         (snapshot_dir / RESTORE_MARKER).write_text(utc_now_iso(), encoding='utf-8')
+        journal = ImportJournal(snapshot_dir)
+        completed_steps = snapshot_info.get('restore_steps') or {}
+
+        def undo_step(name, action):
+            if name in completed_steps:
+                return completed_steps[name]
+            result = action(snapshot_info)
+            journal.record('restore_step_done', step=name, result=result)
+            return result
 
         had_target = target_dir.exists()
         _replace_project_dir(target_dir, backup_path)
@@ -777,15 +841,15 @@ def restore_snapshot(force: bool = False) -> dict:
         if plan['kept']:
             info(f"   ✓ Kept {', '.join(name + '/' for name in plan['kept'])} as it is")
 
-        history_removed = _undo_history(snapshot_info)
+        history_removed = undo_step('history', _undo_history)
         if history_removed:
             info(f"   ✓ Removed {history_removed} prompt-history line(s)")
-        if _undo_file_history(snapshot_info):
+        if undo_step('file_history', _undo_file_history):
             info(f"   ✓ Removed the imported file history")
-        config_removed = _undo_config_files(snapshot_info)
+        config_removed = undo_step('config', _undo_config_files)
         if config_removed:
             info(f"   ✓ Removed {config_removed} config file(s)")
-        claude_md_result = _undo_claude_md(snapshot_info)
+        claude_md_result = undo_step('claude_md', _undo_claude_md)
         if claude_md_result:
             info(f"   ✓ {claude_md_result}")
 

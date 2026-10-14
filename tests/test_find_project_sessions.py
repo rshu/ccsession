@@ -133,3 +133,14 @@ def test_find_project_sessions_skips_agent_files(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: fake_home)
 
     assert [s["path"] for s in find_project_sessions("/mnt/c/proj")] == [main]
+
+
+def test_session_discovery_skips_directories_named_like_transcripts(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    project = tmp_path / '.claude' / 'projects' / get_normalized_project_dir('/mnt/c/proj')
+    (project / 'bogus.jsonl').mkdir(parents=True)
+    main = project / 'real.jsonl'
+    main.write_text('{}\n', encoding='utf-8')
+
+    assert [s['path'] for s in find_project_sessions('/mnt/c/proj')] == [main]
+    assert find_session_by_id('bogus') is None

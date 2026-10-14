@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import sys
+from types import SimpleNamespace
 
 import pytest
 
 from ccsession.errors import InvalidExportError
 from ccsession.importing.auxiliary import import_file_history
-from ccsession.importing.config import add_claude_md_note, import_config
+from ccsession.importing.config import add_claude_md_note, import_config, place_file
 
 
 def _export(root: Path, **snapshot) -> dict:
@@ -290,3 +293,91 @@ def test_note_is_found_after_its_line_endings_were_normalised(tmp_path):
     (tmp_path / "CLAUDE.md").write_bytes(data.replace(b"\n", b"\r\n"))
 
     assert add_claude_md_note(tmp_path, MANIFEST) is False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("linked_directory", [".claude", ".claude/commands"])
+def test_config_files_are_not_written_through_parent_symlinks(tmp_path, linked_directory):
+    export = tmp_path / "export"
+    manifest = _export(export, commands=["config/commands/review.md"])
+    _touch(export / "config" / "commands" / "review.md", "theirs")
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "dotfiles"
+    outside.mkdir()
+    link = project / linked_directory
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(outside, target_is_directory=True)
+
+    summary = import_config(export, manifest, project)
+
+    assert summary["commands"] == 0
+    assert summary["conflicts"] == [str(project / ".claude" / "commands" / "review.md")]
+    assert list(outside.iterdir()) == []
+    assert link.is_symlink()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("linked_directory", ["file-history", "file-history/sid"])
+def test_file_history_is_not_written_through_directory_symlinks(tmp_path, monkeypatch, linked_directory):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    export = tmp_path / "export"
+    _touch(export / "session" / "file-history" / "160c@v1", "snapshot")
+    manifest = {"session_data": {"file_history": ["session/file-history/160c@v1"]}}
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = tmp_path / ".claude" / linked_directory
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(FileExistsError, match="symlink"):
+        import_file_history(export, manifest, "sid")
+
+    assert list(outside.iterdir()) == []
+    assert link.is_symlink()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_stale_copy_temporary_symlink_cannot_overwrite_an_external_file(tmp_path):
+    source = _touch(tmp_path / "source", "imported")
+    target = tmp_path / "review.md"
+    outside = _touch(tmp_path / "outside", "private")
+    stale = target.with_name(f".{target.name}.ccsession-tmp-{os.getpid()}")
+    stale.symlink_to(outside)
+
+    place_file(source, target, kind="config_file")
+
+    assert outside.read_text(encoding="utf-8") == "private"
+    assert stale.is_symlink()
+    assert not target.is_symlink() and target.read_text(encoding="utf-8") == "imported"
+
+
+def test_copy_temporary_allocation_is_exclusive_and_keeps_colliding_files(tmp_path, monkeypatch):
+    source = _touch(tmp_path / "source", "imported")
+    target = tmp_path / "review.md"
+    temporary = _touch(target.with_name(f".{target.name}.ccsession-tmp-fixed"), "existing")
+    monkeypatch.setattr("ccsession.importing.config.uuid.uuid4", lambda: SimpleNamespace(hex="fixed"))
+
+    with pytest.raises(FileExistsError):
+        place_file(source, target, kind="config_file")
+
+    assert temporary.read_text(encoding="utf-8") == "existing"
+    assert not target.exists()
+
+
+def test_a_copy_temporary_file_is_journaled_before_it_is_allocated(tmp_path):
+    source = _touch(tmp_path / "source", "imported")
+    target = tmp_path / "review.md"
+    entries = []
+
+    class Journal:
+        def record(self, kind, **fields):
+            if kind == "config_file":
+                assert not os.path.lexists(fields["tmp"])
+            entries.append((kind, fields))
+
+    place_file(source, target, kind="config_file", journal=Journal())
+
+    assert [kind for kind, fields in entries] == ["config_file", "config_file_done"]
+    assert entries[0][1]["tmp"].startswith(str(target.with_name(f".{target.name}.ccsession-tmp-")))
+    assert not Path(entries[0][1]["tmp"]).exists()

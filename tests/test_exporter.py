@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from ccsession.export.exporter import export_session
@@ -206,19 +207,17 @@ def test_an_export_name_must_be_a_single_plain_component(tmp_path, monkeypatch, 
     assert (out / "precious.txt").exists()
 
 
-def test_a_failed_export_into_an_existing_directory_leaves_it(tmp_path, monkeypatch):
-    from unittest.mock import patch
+def test_export_into_an_existing_directory_is_rejected_without_writing(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     claude = _fake_claude_dir(tmp_path)
     (tmp_path / "out" / "t").mkdir(parents=True)
     (tmp_path / "out" / "t" / "keep.txt").write_text("x", encoding="utf-8")
     session_info = {"path": claude / "projects" / "-home-user-proj" / f"{SID}.jsonl", "session_id": SID, "mtime": 0}
 
-    with patch("ccsession.export.exporter.format_trajectory", side_effect=RuntimeError("boom")):
-        with pytest.raises(RuntimeError):
-            export_session(session_info, PROJECT, export_name="t", output_dir=tmp_path / "out")
+    with pytest.raises(FileExistsError, match="already exists"):
+        export_session(session_info, PROJECT, export_name="t", output_dir=tmp_path / "out")
 
-    assert (tmp_path / "out" / "t" / "keep.txt").exists()
+    assert list((tmp_path / "out" / "t").iterdir()) == [tmp_path / "out" / "t" / "keep.txt"]
 
 
 def test_prompt_history_with_a_lone_surrogate_exports(tmp_path, monkeypatch):
@@ -232,3 +231,154 @@ def test_prompt_history_with_a_lone_surrogate_exports(tmp_path, monkeypatch):
 
     lines = (export_dir / "session" / "history.jsonl").read_bytes().decode("utf-8").splitlines()
     assert json.loads(lines[-1])["display"] == "cut \ud83d"
+
+
+@pytest.mark.parametrize("mode", ["portable", "classic"])
+def test_reexport_cannot_corrupt_an_existing_export(tmp_path, monkeypatch, mode):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    claude = _fake_claude_dir(tmp_path)
+    session_info = {"path": claude / "projects" / "-home-user-proj" / f"{SID}.jsonl", "session_id": SID}
+    export_dir, _ = export_session(session_info, PROJECT, export_name="t", output_dir=tmp_path / "out", mode=mode)
+    original = {p.relative_to(export_dir): p.read_bytes() for p in export_dir.rglob('*') if p.is_file()}
+    session_info['path'].write_text(json.dumps(_record(message={"role": "user", "content": "changed"})) + '\n',
+                                    encoding='utf-8')
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        export_session(session_info, PROJECT, export_name="t", output_dir=tmp_path / "out", mode=mode)
+
+    assert {p.relative_to(export_dir): p.read_bytes() for p in export_dir.rglob('*') if p.is_file()} == original
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='symlinks need privileges on Windows')
+def test_export_rejects_a_destination_symlink(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    claude = _fake_claude_dir(tmp_path)
+    target = tmp_path / 'target'
+    target.mkdir()
+    (target / 'session_info.json').write_text('precious', encoding='utf-8')
+    out = tmp_path / 'out'
+    out.mkdir()
+    (out / 't').symlink_to(target, target_is_directory=True)
+    session_info = {'path': claude / 'projects' / '-home-user-proj' / f'{SID}.jsonl', 'session_id': SID}
+
+    with pytest.raises(FileExistsError, match='already exists'):
+        export_session(session_info, PROJECT, export_name='t', output_dir=out)
+
+    assert (out / 't').is_symlink()
+    assert (target / 'session_info.json').read_text(encoding='utf-8') == 'precious'
+    assert len(list(target.iterdir())) == 1
+
+
+@pytest.mark.parametrize('mode', ['portable', 'classic'])
+def test_automatic_names_allow_two_exports_in_one_second(tmp_path, monkeypatch, mode):
+    from datetime import datetime, timedelta, timezone
+    from itertools import count
+    from unittest.mock import patch
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    claude = _fake_claude_dir(tmp_path)
+    session_info = {'path': claude / 'projects' / '-home-user-proj' / f'{SID}.jsonl', 'session_id': SID}
+    ticks = count()
+    with patch('ccsession.export.exporter.datetime') as clock:
+        clock.now.side_effect = lambda _tz: datetime(2026, 10, 14, tzinfo=timezone.utc) + timedelta(microseconds=next(ticks))
+        first, _ = export_session(session_info, PROJECT, output_dir=tmp_path / 'out', mode=mode)
+        second, _ = export_session(session_info, PROJECT, output_dir=tmp_path / 'out', mode=mode)
+
+    assert first != second
+    assert first.is_dir() and second.is_dir()
+
+
+def test_invalid_mode_is_rejected_before_creating_output(tmp_path):
+    with pytest.raises(ValueError, match='export mode'):
+        export_session({}, PROJECT, export_name='t', output_dir=tmp_path / 'out', mode='typo')
+    assert not (tmp_path / 'out').exists()
+
+
+@pytest.mark.parametrize('model', [None, {}, [], 7])
+@pytest.mark.parametrize('usage', [None, [], {'input_tokens': None, 'output_tokens': 'bad',
+                                          'cache_read_input_tokens': 12, 'cache_creation_input_tokens': -1}])
+def test_malformed_assistant_fields_do_not_abort_export(tmp_path, monkeypatch, model, usage):
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    claude = _fake_claude_dir(tmp_path)
+    source = claude / 'projects' / '-home-user-proj' / f'{SID}.jsonl'
+    record = _record(message={'role': 'assistant', 'model': model, 'usage': usage,
+                             'content': [{'type': 'text', 'text': None}, {'type': 'thinking', 'thinking': 123},
+                                         {'type': 'tool_use', 'name': {}, 'id': 't', 'input': {}}]})
+    source.write_text(json.dumps(record) + '\n', encoding='utf-8')
+    export_dir, manifest = export_session({'path': source, 'session_id': SID}, PROJECT,
+                                          export_name='t', output_dir=tmp_path / 'out')
+
+    assert manifest['statistics']['models_used'] == []
+    trajectory = json.loads((export_dir / 'trajectory.json').read_text(encoding='utf-8'))
+    assert trajectory['trajectory'][0]['usage'] == usage
+    assert trajectory['statistics']['tool_calls_by_name'] == {'unknown': 1}
+    assert trajectory['statistics']['tokens'] == {'input': 0, 'output': 0, 'cache_read': 12 if isinstance(usage, dict) else 0,
+                                                 'cache_creation': 0}
+    assert (export_dir / 'session' / 'main.jsonl').read_bytes() == source.read_bytes()
+
+
+def test_live_main_transcript_is_captured_once_for_all_formats(tmp_path, monkeypatch):
+    from ccsession.export.parsers import parse_jsonl_file
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    claude = _fake_claude_dir(tmp_path)
+    source = claude / 'projects' / '-home-user-proj' / f'{SID}.jsonl'
+    before = source.read_bytes()
+
+    def parse_then_append(snapshot):
+        result = parse_jsonl_file(snapshot)
+        with source.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(_record(uuid='later', message={'role': 'user', 'content': 'late arrival'})) + '\n')
+        return result
+
+    monkeypatch.setattr('ccsession.export.exporter.parse_jsonl_file', parse_then_append)
+    export_dir, manifest = export_session({'path': source, 'session_id': SID}, PROJECT,
+                                          export_name='t', output_dir=tmp_path / 'out')
+
+    assert source.read_bytes() != before
+    assert (export_dir / 'raw_messages.jsonl').read_bytes() == before
+    assert (export_dir / 'session' / 'main.jsonl').read_bytes() == before
+    assert manifest['statistics']['message_count'] == 1
+    trajectory = json.loads((export_dir / 'trajectory.json').read_text(encoding='utf-8'))
+    assert trajectory['statistics']['turns'] == 1
+    assert 'late arrival' not in (export_dir / 'RENDERED.md').read_text(encoding='utf-8')
+
+
+def test_live_agent_trajectory_uses_its_mirrored_transcript_and_meta(tmp_path, monkeypatch):
+    from ccsession.export.trajectory import format_trajectory
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    claude = _fake_claude_dir(tmp_path)
+    project_dir = claude / 'projects' / '-home-user-proj'
+    agent = project_dir / SID / 'subagents' / f'agent-{AGENT}.jsonl'
+
+    def append_then_render(*args, **kwargs):
+        with agent.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(_record(uuid='later', agentId=AGENT)) + '\n')
+        agent.with_suffix('.meta.json').write_text('{"agentType":"changed"}', encoding='utf-8')
+        return format_trajectory(*args, **kwargs)
+
+    monkeypatch.setattr('ccsession.export.exporter.format_trajectory', append_then_render)
+    export_dir, _ = export_session({'path': project_dir / f'{SID}.jsonl', 'session_id': SID}, PROJECT,
+                                   export_name='t', output_dir=tmp_path / 'out')
+    trajectory = json.loads((export_dir / 'trajectory.json').read_text(encoding='utf-8'))
+    assert trajectory['sub_agents'][0]['statistics']['turns'] == 1
+    assert trajectory['sub_agents'][0]['meta']['agent_type'] == 'Explore'
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='symlinks need privileges on Windows')
+def test_symlinked_subagent_directory_is_mirrored_and_rendered(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    claude = _fake_claude_dir(tmp_path)
+    project_dir = claude / 'projects' / '-home-user-proj'
+    shared = tmp_path / 'shared-subagents'
+    (project_dir / SID / 'subagents').rename(shared)
+    (project_dir / SID / 'subagents').symlink_to(shared, target_is_directory=True)
+    (shared / 'cycle').symlink_to(project_dir / SID, target_is_directory=True)
+
+    export_dir, manifest = export_session({'path': project_dir / f'{SID}.jsonl', 'session_id': SID}, PROJECT,
+                                          export_name='t', output_dir=tmp_path / 'out')
+
+    mirrored = export_dir / 'session' / 'session-dir' / 'subagents'
+    assert (mirrored / f'agent-{AGENT}.jsonl').is_file()
+    assert (mirrored / f'agent-{AGENT}.meta.json').is_file()
+    trajectory = json.loads((export_dir / 'trajectory.json').read_text(encoding='utf-8'))
+    assert trajectory['sub_agents'][0]['meta']['agent_type'] == 'Explore'
+    assert manifest['session_data']['agent_sessions'] == [f'session/session-dir/subagents/agent-{AGENT}.jsonl']

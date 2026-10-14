@@ -1122,6 +1122,7 @@ def test_the_project_directory_must_exist(tmp_path, monkeypatch):
     lambda m: m["session_data"].update(agent_sessions=[5]),
     lambda m: m["session_data"].update(file_history="x"),
     lambda m: m["session_data"].update(history=7),
+    lambda m: m["original_context"].update(repo_path=7),
 ])
 def test_manifest_fields_of_the_wrong_type_are_refused_cleanly(tmp_path, monkeypatch, mutate):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -1166,3 +1167,105 @@ def test_version_probe_on_windows_runs_from_the_executables_directory(tmp_path, 
     kwargs = run.call_args[1]
     assert Path(kwargs["cwd"]) == exe_dir
     assert kwargs["env"]["NoDefaultCurrentDirectoryInExePath"] == "1"
+
+
+@pytest.mark.parametrize("inventory", [[], None])
+def test_all_mirrored_agent_ids_are_remapped_even_with_an_incomplete_inventory(tmp_path, monkeypatch, inventory):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    export = tmp_path / "export"
+    sid, agent_id = "7f6738b0-d2cb-44ae-a806-09860af58e1f", "a9ba8b4d8b37efc78"
+    _export_with_agent(export, sid, agent_id, "/old/proj")
+    _rewrite_manifest(export, lambda m: m["session_data"].update(agent_sessions=inventory))
+    project = tmp_path / "newproj"
+    project.mkdir()
+    agent = export / "session" / "session-dir" / "subagents" / f"agent-{agent_id}.jsonl"
+    with agent.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"uuid": "s2", "parentUuid": "s1", "sessionId": sid}) + "\n")
+
+    with patch("ccsession.importing.importer.check_version_compatibility", return_value=(True, None)):
+        summary = import_session(export, project_path=project, non_interactive=True)
+
+    restored_agent = get_projects_dir(project) / summary["session_id"] / "subagents" / f"agent-{agent_id}.jsonl"
+    records = [json.loads(line) for line in restored_agent.read_text(encoding="utf-8").splitlines()]
+    assert records[0]["uuid"] != "s1" and records[1]["uuid"] != "s2"
+    assert records[1]["parentUuid"] == records[0]["uuid"]
+    assert {r["sessionId"] for r in records} == {summary["session_id"]}
+
+
+def test_a_null_optional_original_context_imports(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    export = tmp_path / "export"
+    _export_with_agent(export, "7f6738b0-d2cb-44ae-a806-09860af58e1f", "a9ba8b4d8b37efc78", "/old/proj")
+    _rewrite_manifest(export, lambda m: m.update(original_context=None))
+    project = tmp_path / "newproj"
+    project.mkdir()
+
+    with patch("ccsession.importing.importer.check_version_compatibility", return_value=(True, None)):
+        summary = import_session(export, project_path=project, non_interactive=True)
+
+    assert Path(summary["session_file"]).is_file()
+    assert "User: Unknown" in (project / "CLAUDE.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("destination", ["project", "session", "transcript", "file-history"])
+def test_import_refuses_symlink_destinations_before_replacing_snapshot(tmp_path, monkeypatch, destination):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    export = tmp_path / "export"
+    sid = "7f6738b0-d2cb-44ae-a806-09860af58e1f"
+    _export_with_agent(export, sid, "a9ba8b4d8b37efc78", "/old/proj")
+    project = tmp_path / "newproj"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    target_dir = get_projects_dir(project)
+    if destination == "project":
+        outside.mkdir()
+        target_dir.parent.mkdir(parents=True)
+        target_dir.symlink_to(outside, target_is_directory=True)
+    elif destination == "session":
+        outside.mkdir()
+        target_dir.mkdir(parents=True)
+        (target_dir / sid).symlink_to(outside, target_is_directory=True)
+    elif destination == "transcript":
+        target_dir.mkdir(parents=True)
+        (target_dir / f"{sid}.jsonl").symlink_to(outside)
+    else:
+        (export / "session" / "file-history").mkdir()
+        (export / "session" / "file-history" / "160c@v1").write_text("snapshot", encoding="utf-8")
+        _rewrite_manifest(export, lambda m: m["session_data"].update(file_history=["session/file-history/160c@v1"]))
+        outside.mkdir()
+        (tmp_path / ".claude").mkdir(exist_ok=True)
+        (tmp_path / ".claude" / "file-history").symlink_to(outside, target_is_directory=True)
+    previous = _previous_snapshot(tmp_path)
+
+    with patch("ccsession.importing.importer.check_version_compatibility", return_value=(True, None)):
+        with pytest.raises(FileExistsError):
+            import_session(export, project_path=project, preserve_session_id=True, non_interactive=True)
+
+    assert (previous / "snapshot_info.json").read_text(encoding="utf-8").startswith('{"timestamp": "2026-01-01')
+    assert not outside.exists() or (outside.is_dir() and not list(outside.iterdir()))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX target paths needed for this cross-platform regression")
+def test_a_windows_export_imports_with_working_tool_output_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    export = tmp_path / "export"
+    sid = "7f6738b0-d2cb-44ae-a806-09860af58e1f"
+    _export_with_agent(export, sid, "a9ba8b4d8b37efc78", "C:\\work\\proj")
+    output = export / "session" / "session-dir" / "tool-results" / "b7.txt"
+    output.parent.mkdir()
+    output.write_text("tool output", encoding="utf-8")
+    transcript = export / "session" / "main.jsonl"
+    with transcript.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"uuid": "u4", "sessionId": sid,
+                           "cwd": "C:/work/proj/sub", "toolUseResult": {
+                               "persistedOutputPath": "C:\\Users\\u\\.claude\\projects\\C--work-proj\\" + sid + "\\tool-results\\b7.txt"}}) + "\n")
+    project = tmp_path / "newproj"
+    project.mkdir()
+
+    with patch("ccsession.importing.importer.check_version_compatibility", return_value=(True, None)):
+        summary = import_session(export, project_path=project, non_interactive=True)
+
+    records = [json.loads(line) for line in Path(summary["session_file"]).read_text(encoding="utf-8").splitlines()]
+    assert records[-1]["cwd"] == str(project / "sub")
+    assert Path(records[-1]["toolUseResult"]["persistedOutputPath"]).read_text(encoding="utf-8") == "tool output"

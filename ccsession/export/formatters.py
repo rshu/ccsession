@@ -29,6 +29,11 @@ def _xml_text(value) -> str:
     return _XML_INVALID_RE.sub('', str(value))
 
 
+def _display_text(value) -> str:
+    """Render malformed text fields without aborting an otherwise valid export."""
+    return '' if value is None else str(value)
+
+
 def render_tool_result_content(content) -> str:
     """Human-readable text for a ``tool_result`` block's ``content``.
 
@@ -107,13 +112,13 @@ def format_message_markdown(message_data: dict) -> str:
                     content_type = content.get('type')
 
                     if content_type == 'text':
-                        output.append(content.get('text', ''))
+                        output.append(_display_text(content.get('text', '')))
 
                     elif content_type == 'thinking':
                         output.append("\n<details>")
                         output.append("<summary>\U0001f4ad Internal Reasoning (click to expand)</summary>\n")
                         output.append("```")
-                        output.append(content.get('thinking', ''))
+                        output.append(_display_text(content.get('thinking', '')))
                         output.append("```")
                         output.append("</details>\n")
 
@@ -205,7 +210,7 @@ def format_message_xml(message_data: dict, parent_element: ET.Element) -> None:
                             result_elem.text = _xml_text(render_tool_result_content(content.get('content', '')))
 
         # Add usage info
-        if 'usage' in msg:
+        if isinstance(msg.get('usage'), dict):
             usage_elem = ET.SubElement(msg_elem, 'usage')
             usage = msg['usage']
 

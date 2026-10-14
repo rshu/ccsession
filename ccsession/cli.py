@@ -207,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
         set_verbosity(QUIET)
     elif args.verbose:
         set_verbosity(VERBOSE)
+    else:
+        set_verbosity(NORMAL)
 
     dispatch = {
         'export': cmd_export,

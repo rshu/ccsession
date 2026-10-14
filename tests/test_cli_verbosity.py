@@ -95,6 +95,15 @@ class TestVerbosityFlags:
                 main()
                 assert get_verbosity() == VERBOSE
 
+    @pytest.mark.parametrize("previous", [QUIET, VERBOSE])
+    def test_default_verbosity_resets_between_invocations(self, previous):
+        from ccsession.cli import main
+
+        set_verbosity(previous)
+        with patch("ccsession.cli.cmd_export", return_value=0):
+            assert main(["export"]) == 0
+        assert get_verbosity() == NORMAL
+
 
 class TestExportModeFlag:
     def test_mode_portable_accepted(self, isolated):

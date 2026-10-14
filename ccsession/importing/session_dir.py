@@ -35,6 +35,17 @@ class PreparedFile:
     payload: object
 
 
+def read_agent_transcripts(export_path: Path, manifest: dict) -> dict[str, list[dict]]:
+    """Every transcript the mirror will restore, keyed by its source path.
+
+    The mirror is authoritative: an omitted or incomplete agent_sessions inventory
+    must not leave restored records outside the UUID map.
+    """
+    return {str(source.resolve()): read_session_jsonl(source)
+            for source, relative in _iter_sources(export_path, manifest)
+            if relative.parent.name == 'subagents' and relative.suffix == '.jsonl'}
+
+
 def prepare_session_dir(export_path: Path, manifest: dict, plan: RemapPlan) -> list:
     """Read and rewrite the whole session-directory mirror without writing anything.
 
@@ -75,6 +86,9 @@ def write_session_dir(prepared: list, target_session_dir: Path) -> SessionDirImp
     """
     if not prepared:
         return SessionDirImport(files=0, agents=0)
+    if target_session_dir.is_symlink():
+        raise FileExistsError(f"Session directory is a symlink: {target_session_dir}\n"
+                              "Import aborted to prevent writing outside the session directory.")
     if target_session_dir.exists() and any(target_session_dir.iterdir()):
         raise FileExistsError(
             f"Session directory already exists and is not empty: {target_session_dir}\n"
@@ -246,13 +260,18 @@ def _iter_sources(export_path: Path, manifest: dict) -> Iterator[tuple]:
         return
     for source in sorted(p for p in root.rglob('*') if p.is_file()):
         if source.name != _EMPTY_MARKER:
+            # A mirror can contain file symlinks even though its root is confined.
+            # Check each resolved source before reading or copying its contents.
+            resolve_export_path(export_path, str(source.relative_to(Path(export_path).resolve())))
             yield source, source.relative_to(root)
 
 
 def _read_json(path: Path) -> dict:
     with open(path, 'r', encoding='utf-8') as f:
         data = json.load(f)
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        raise ValueError("the top level is not a JSON object")
+    return data
 
 
 def _write_json(data: dict, path: Path) -> None:

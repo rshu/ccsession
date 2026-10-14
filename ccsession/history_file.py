@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import os
 import stat
+import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from typing import Callable, Iterable
@@ -36,6 +38,8 @@ def history_lock(path, timeout: float = 30.0):
             os.mkdir(lock)
             break
         except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise HistoryBusyError(f"{real} is locked by another process ({lock})")
             try:
                 age = time.time() - os.stat(lock).st_mtime
             except FileNotFoundError:
@@ -46,16 +50,46 @@ def history_lock(path, timeout: float = 30.0):
                 except OSError:
                     time.sleep(0.05)
                 continue
-            if time.monotonic() > deadline:
-                raise HistoryBusyError(f"{real} is locked by another process ({lock})")
             time.sleep(0.05)
+    # proper-lockfile considers even an actively held lock stale after 10 seconds
+    # without an mtime update. Large histories and fsynced import journals can keep
+    # us here longer than that, so use the same heartbeat as Claude Code.
+    owner = os.stat(lock)
+    stop = threading.Event()
+    lost = threading.Event()
+
+    def still_owned() -> bool:
+        try:
+            current = os.stat(lock)
+        except OSError:
+            return False
+        return (current.st_dev, current.st_ino) == (owner.st_dev, owner.st_ino)
+
+    def refresh() -> None:
+        while not stop.wait(min(5.0, LOCK_STALE_SECONDS / 2)):
+            try:
+                if not still_owned():
+                    lost.set()
+                    return
+                os.utime(lock, None)
+            except OSError:
+                lost.set()
+                return
+
+    heartbeat = threading.Thread(target=refresh, daemon=True)
+    heartbeat.start()
     try:
         yield real
+        if lost.is_set() or not still_owned():
+            raise HistoryBusyError(f"The lock on {real} was lost while it was in use")
     finally:
-        try:
-            os.rmdir(lock)
-        except OSError:
-            pass
+        stop.set()
+        heartbeat.join()
+        if still_owned():
+            try:
+                os.rmdir(lock)
+            except OSError:
+                pass
 
 
 def _ends_without_newline(real: str) -> bool:
@@ -133,9 +167,9 @@ def rewrite_lines(path, decide: Callable[[list], list], *, remove_if_empty: bool
                     return removed
                 continue
             mode = stat.S_IMODE(before.st_mode)
-            tmp = f'{real}.ccsession-tmp-{os.getpid()}'
+            fd, tmp = tempfile.mkstemp(prefix=os.path.basename(real) + '.ccsession-tmp-',
+                                       dir=os.path.dirname(real))
             try:
-                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _BINARY, mode)
                 with os.fdopen(fd, 'wb') as f:
                     f.write(b''.join(kept))
                 os.chmod(tmp, mode)

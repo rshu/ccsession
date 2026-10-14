@@ -82,7 +82,7 @@ def find_project_sessions(project_path: str | Path) -> list[dict]:
     # (pre-2.1 sub-agent transcripts) are never main sessions.
     jsonl_files = []
     for file in claude_project_dir.glob('*.jsonl'):
-        if file.name.startswith('agent-'):
+        if file.name.startswith('agent-') or not file.is_file():
             continue
         stat = file.stat()
         jsonl_files.append({
@@ -134,7 +134,7 @@ def find_session_by_id(session_id: str) -> dict | None:
             continue
         for file in project_dir.glob('*.jsonl'):
             # Skip agent session files
-            if file.name.startswith('agent-'):
+            if file.name.startswith('agent-') or not file.is_file():
                 continue
             if file.stem == session_id or file.stem.startswith(session_id):
                 stat = file.stat()

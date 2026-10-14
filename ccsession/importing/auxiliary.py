@@ -44,6 +44,7 @@ def import_file_history(export_path: Path, manifest: dict, new_session_id: str,
         return 0
 
     target_dir = get_file_history_dir(new_session_id)
+    validate_file_history_target(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     copied = 0
     for source_path in sources:
@@ -54,3 +55,11 @@ def import_file_history(export_path: Path, manifest: dict, new_session_id: str,
         created.append(str(target))
         copied += 1
     return copied
+
+
+def validate_file_history_target(target_dir: Path) -> None:
+    """Do not add snapshots through symlinks that a restore cannot safely undo."""
+    for directory in (target_dir.parent, target_dir):
+        if directory.is_symlink():
+            raise FileExistsError(f"File-history directory is a symlink: {directory}\n"
+                                  "Import aborted to prevent writing outside the file-history directory.")

@@ -181,6 +181,12 @@ def _transform_turn(msg: dict, index: int) -> dict:
     return turn
 
 
+def _token_count(usage: dict, key: str) -> int:
+    """Count only valid token totals; retain malformed values in the raw turn."""
+    value = usage.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
 def _compute_statistics(turns: list[dict]) -> dict:
     """Compute aggregate statistics from trajectory turns."""
     user_turns = 0
@@ -200,20 +206,25 @@ def _compute_statistics(turns: list[dict]) -> dict:
             user_turns += 1
         elif role == 'assistant':
             assistant_turns += 1
-            usage = turn.get('usage', {})
-            tokens_input += usage.get('input_tokens', 0)
-            tokens_output += usage.get('output_tokens', 0)
-            tokens_cache_read += usage.get('cache_read_input_tokens', 0)
-            tokens_cache_creation += usage.get('cache_creation_input_tokens', 0)
+            usage = turn.get('usage')
+            if isinstance(usage, dict):
+                tokens_input += _token_count(usage, 'input_tokens')
+                tokens_output += _token_count(usage, 'output_tokens')
+                tokens_cache_read += _token_count(usage, 'cache_read_input_tokens')
+                tokens_cache_creation += _token_count(usage, 'cache_creation_input_tokens')
         elif role == 'event':
             events += 1
             event_type = turn.get('event_type', 'unknown')
+            if not isinstance(event_type, str):
+                event_type = 'unknown'
             events_by_type[event_type] = events_by_type.get(event_type, 0) + 1
 
         for block in turn.get('content', []):
             if block.get('type') == 'tool_call':
                 tool_calls += 1
                 name = block.get('name', 'unknown')
+                if not isinstance(name, str):
+                    name = 'unknown'
                 tool_calls_by_name[name] = tool_calls_by_name.get(name, 0) + 1
 
     return {
@@ -267,7 +278,7 @@ def load_agent_meta(agent_path: Path) -> dict:
     try:
         with open(meta_path, 'r', encoding='utf-8') as f:
             raw = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
     if not isinstance(raw, dict):
         return {}

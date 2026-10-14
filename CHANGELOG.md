@@ -5,6 +5,34 @@
 Exports keep `layout_version` 2; exports written by 2.1.0 still import.
 
 ### Fixes
+- Reusing an export name now refuses the existing destination without changing it;
+  automatic names include microseconds. The main transcript is captured once and
+  sub-agent rendering uses its mirrored copy, so each export's raw and rendered
+  files agree while Claude Code continues writing.
+- Export timestamps are compared as dates, including UTC offsets and fractional
+  seconds. Null or malformed assistant fields no longer crash rendering or token
+  statistics, and symlinked skill aliases retain all their names.
+- Import validates nested mirror files as well as manifest paths, refuses unsafe
+  symlinked session and file-history destinations, and skips config writes through
+  symlinked parent directories. Invalid sidecars and manifest fields fail before
+  replacing the snapshot.
+- Import relocates path separators correctly between Windows and POSIX and builds
+  the UUID map from every mirrored sub-agent, including ones missing from the
+  manifest's inventory. Nullable optional manifest fields are handled consistently.
+- Restore keeps its snapshot when prompt history is locked and records completed
+  cleanup steps so a retry does not remove files or history added after those steps.
+  Config cleanup avoids directories replaced with symlinks, malformed snapshot
+  flags are refused, and journal writes recover after a torn final entry.
+- History locks refresh during long operations, malformed stale locks respect the
+  timeout, and lock release does not remove another writer's lock. History rewrites
+  use exclusive temporary files.
+- Repeated CLI calls reset the default verbosity instead of inheriting the previous
+  invocation's quiet or verbose mode.
+- Fixture capture refuses output paths that overlap the source store, builds and
+  validates the new fixture before replacing an existing one, sanitizes text
+  sidecars and snapshots, and handles surrogate escapes and non-object history.
+  The live test resolves relative config paths before changing directories and
+  safely handles quoted temporary paths. Both helpers ship with the source tests.
 - The project directory name now follows Claude Code 2.1.287 exactly: the path is
   NFC-normalised, every non-alphanumeric character becomes `-` (so paths with
   spaces, `~`, `@`, `+`, `(`, `)` or non-ASCII characters are found), names longer

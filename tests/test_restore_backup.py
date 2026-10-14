@@ -1171,3 +1171,183 @@ def test_index_entries_of_odd_shape_are_ignored(tmp_path, monkeypatch):
         "c": {"session_name": "aware", "imported_at": "2026-10-14T12:00:00Z"}}}), encoding="utf-8")
 
     assert get_last_import_info()["session_name"] == "naive"
+
+
+def test_a_busy_history_keeps_the_snapshot_for_retry(tmp_path, monkeypatch):
+    from ccsession.history_file import HistoryBusyError
+    import ccsession.restore as restore_module
+    project, _ = _import_into(tmp_path, monkeypatch)
+    snapshot = tmp_path / ".claude-session-imports" / "pre-import-snapshot"
+    real_rewrite = restore_module.rewrite_lines
+    monkeypatch.setattr(restore_module, "rewrite_lines", lambda *a, **kw: (_ for _ in ()).throw(
+        HistoryBusyError("history is locked by Claude Code")))
+
+    with pytest.raises(RuntimeError, match="locked by Claude Code"):
+        restore_snapshot(force=True)
+
+    assert snapshot.is_dir() and (snapshot / "RESTORE_IN_PROGRESS").is_file()
+    assert "Imported Session Context" in (project / "CLAUDE.md").read_text(encoding="utf-8")
+    monkeypatch.setattr(restore_module, "rewrite_lines", real_rewrite)
+    result = restore_snapshot(force=True)
+    assert result["restored"] is True and result["history_lines_removed"] == 1
+    assert not snapshot.exists()
+
+
+@pytest.mark.skipif(_sys.platform == "win32", reason="POSIX symlinks")
+@pytest.mark.parametrize("replace_root", [False, True])
+def test_restore_does_not_delete_config_through_replaced_symlinks(tmp_path, monkeypatch, replace_root):
+    project, _ = _import_into(tmp_path, monkeypatch)
+    victim = tmp_path / "external-config"
+    victim.mkdir()
+    if replace_root:
+        directory = project / ".claude"
+        (victim / "commands").mkdir()
+        file = victim / "commands" / "review.md"
+    else:
+        directory = project / ".claude" / "commands"
+        file = victim / "review.md"
+    file.write_text("precious", encoding="utf-8")
+    directory.rename(directory.with_name(directory.name + "-original"))
+    directory.symlink_to(victim, target_is_directory=True)
+
+    assert restore_snapshot(force=True)["restored"] is True
+
+    assert directory.is_symlink() and file.read_text(encoding="utf-8") == "precious"
+
+
+@pytest.mark.skipif(_sys.platform == "win32", reason="POSIX symlinks")
+def test_restore_refuses_a_project_directory_replaced_by_a_symlink(tmp_path, monkeypatch):
+    project, _ = _import_into(tmp_path, monkeypatch)
+    target = get_projects_dir(project)
+    victim = tmp_path / "external-project"
+    (victim / "memory").mkdir(parents=True)
+    precious = victim / "memory" / "keep.md"
+    precious.write_text("precious", encoding="utf-8")
+    target.rename(target.with_name(target.name + "-original"))
+    target.symlink_to(victim, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        restore_snapshot(force=True)
+
+    assert target.is_symlink() and precious.read_text(encoding="utf-8") == "precious"
+
+
+@pytest.mark.parametrize("values", [
+    {"backup_exists": "false"}, {"snapshot_version": "2"}, {"snapshot_version": True},
+    {"history_file": {"path": "/history", "existed": "false"}},
+    {"file_history_dir": {"path": "/file-history", "existed": 0}},
+])
+def test_snapshot_boolean_and_version_fields_are_validated(tmp_path, monkeypatch, values):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _snapshot(tmp_path, target_directory=str(tmp_path / ".claude" / "projects" / "-p"), **values)
+    with pytest.raises(RuntimeError, match="damaged"):
+        restore_snapshot(force=True)
+    with pytest.raises(RuntimeError, match="damaged"):
+        show_info()
+
+
+def test_retry_does_not_repeat_completed_undo_steps(tmp_path, monkeypatch):
+    import ccsession.restore as restore_module
+    project, _ = _import_into(tmp_path, monkeypatch)
+    snapshot = tmp_path / ".claude-session-imports" / "pre-import-snapshot"
+    appended = get_snapshot_info()["appended_history_lines"][0]
+    real_undo_md = restore_module._undo_claude_md
+    monkeypatch.setattr(restore_module, "_undo_claude_md", lambda info: (_ for _ in ()).throw(
+        OSError("CLAUDE.md is temporarily unavailable")))
+
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        restore_snapshot(force=True)
+
+    assert snapshot.is_dir()
+    assert get_snapshot_info()["restore_steps"] == {"history": 1, "file_history": 1, "config": 2}
+    history = tmp_path / ".claude" / "history.jsonl"
+    with history.open("a", encoding="utf-8") as f:
+        f.write(appended + "\n")
+    recreated = project / ".claude" / "commands" / "review.md"
+    recreated.parent.mkdir(parents=True)
+    recreated.write_text("a command created after the first restore attempt", encoding="utf-8")
+    monkeypatch.setattr(restore_module, "_undo_claude_md", real_undo_md)
+
+    assert restore_snapshot(force=True)["restored"] is True
+
+    assert appended in history.read_text(encoding="utf-8")
+    assert recreated.read_text(encoding="utf-8") == "a command created after the first restore attempt"
+    assert not snapshot.exists()
+
+
+@pytest.mark.skipif(_sys.platform == "win32", reason="POSIX symlinks")
+def test_restore_does_not_delete_through_a_file_history_parent_symlink(tmp_path, monkeypatch):
+    _, sid = _import_into(tmp_path, monkeypatch)
+    parent = tmp_path / ".claude" / "file-history"
+    external = tmp_path / "external-file-history"
+    (external / sid).mkdir(parents=True)
+    precious = external / sid / "160c@v1"
+    precious.write_text("precious", encoding="utf-8")
+    parent.rename(parent.with_name("original-file-history"))
+    parent.symlink_to(external, target_is_directory=True)
+
+    assert restore_snapshot(force=True)["restored"] is True
+
+    assert parent.is_symlink() and precious.read_text(encoding="utf-8") == "precious"
+
+
+def test_invalid_journal_completion_path_is_ignored(tmp_path, monkeypatch):
+    from ccsession.importing.snapshot import ImportJournal
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    target = tmp_path / ".claude" / "projects" / "-p"
+    snapshot = _snapshot(tmp_path, target_directory=str(target))
+    ImportJournal(snapshot).record("config_file_done", path=["invalid"])
+
+    assert restore_snapshot(force=True)["restored"] is True
+
+
+@pytest.mark.skipif(_sys.platform == "win32", reason="POSIX symlinks")
+@pytest.mark.parametrize("replace_ancestor", [False, True])
+def test_restore_refuses_a_project_path_redirected_since_import(tmp_path, monkeypatch, replace_ancestor):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    project = tmp_path / "container" / "project"
+    project.mkdir(parents=True)
+    target = tmp_path / ".claude" / "projects" / "-p"
+    target.mkdir(parents=True)
+    (target / "imported.jsonl").write_text("imported session\n", encoding="utf-8")
+    config_file = project / ".claude" / "commands" / "review.md"
+    note = "\n\n## Imported Session Context\n"
+    snapshot = _snapshot(
+        tmp_path, target_directory=str(target), claude_dir=str(tmp_path / ".claude"),
+        snapshot_version=2, project_path=str(project), created_config_files=[str(config_file)],
+        claude_md={"path": str(project / "CLAUDE.md"), "existed": True}, claude_md_note=note,
+    )
+    original = project.parent if replace_ancestor else project
+    original.rename(original.with_name(original.name + "-original"))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original.symlink_to(outside, target_is_directory=True)
+    victim_project = outside / "project" if replace_ancestor else outside
+    victim_config = victim_project / ".claude" / "commands" / "review.md"
+    victim_config.parent.mkdir(parents=True)
+    victim_config.write_text("precious config", encoding="utf-8")
+    victim_md = victim_project / "CLAUDE.md"
+    victim_md.write_text("precious instructions" + note, encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="project.*symlink|project.*redirected"):
+        restore_snapshot(force=True)
+
+    assert victim_config.read_text(encoding="utf-8") == "precious config"
+    assert victim_md.read_text(encoding="utf-8") == "precious instructions" + note
+    assert (target / "imported.jsonl").exists() and snapshot.exists()
+
+
+@pytest.mark.skipif(_sys.platform == "win32", reason="POSIX symlinks")
+def test_restore_allows_a_config_directory_alias(tmp_path, monkeypatch):
+    real_config = tmp_path / "real-config"
+    real_config.mkdir()
+    config_alias = tmp_path / "config-alias"
+    config_alias.symlink_to(real_config, target_is_directory=True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_alias))
+    project, sid = _import_into(tmp_path, monkeypatch)
+
+    assert restore_snapshot(force=True)["restored"] is True
+
+    assert config_alias.is_symlink()
+    assert not (get_projects_dir(project) / f"{sid}.jsonl").exists()
+    assert (get_projects_dir(project) / "old.jsonl").read_text(encoding="utf-8") == '{"sessionId": "old"}\n'

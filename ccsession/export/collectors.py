@@ -22,7 +22,8 @@ def collect_agent_sessions(claude_project_dir: Path, session_id: str) -> dict[st
     subagents_dir = claude_project_dir / session_id / 'subagents'
     if not subagents_dir.is_dir():
         return {}
-    return {path.stem[len('agent-'):]: path for path in sorted(subagents_dir.glob('agent-*.jsonl'))}
+    return {path.stem[len('agent-'):]: path for path in sorted(subagents_dir.glob('agent-*.jsonl'))
+            if path.is_file()}
 
 
 def collect_session_dir_files(claude_project_dir: Path, session_id: str) -> list[Path]:
@@ -36,7 +37,7 @@ def collect_session_dir_files(claude_project_dir: Path, session_id: str) -> list
     session_dir = claude_project_dir / session_id
     if not session_dir.is_dir():
         return []
-    return sorted(p for p in session_dir.rglob('*') if p.is_file())
+    return [cf.source for cf in _collect_config_tree(session_dir, None)]
 
 
 def collect_history_lines(session_id: str) -> list[dict]:
@@ -67,7 +68,7 @@ def collect_file_history(session_id: str) -> list[Path]:
     """
     file_history_dir = get_file_history_dir(session_id)
 
-    if not file_history_dir.exists():
+    if not file_history_dir.is_dir():
         return []
 
     files = []
@@ -85,7 +86,7 @@ def collect_session_env(session_id: str) -> Path | None:
     """
     session_env_dir = get_session_env_dir(session_id)
 
-    if session_env_dir.exists():
+    if session_env_dir.is_dir():
         # Check if directory has any files
         files = list(session_env_dir.iterdir())
         if files:
@@ -123,20 +124,23 @@ def _collect_config_tree(root: Path, pattern: str | None) -> list[ConfigFile]:
     """Files under ``root`` matching ``pattern``, following symlinked directories.
 
     Claude Code loads a skill (or command directory) that is a symlink, so the export
-    must include what is behind it; relative paths keep the link's name, and a
-    directory reached twice through links is visited once.
+    must include what is behind it; relative paths keep each link's name. Only
+    links to a directory already in the current branch are skipped, preventing
+    cycles while preserving aliases to shared skills.
     """
     if not root.is_dir():
         return []
     files = []
-    seen = set()
+    ancestors = {str(root): frozenset()}
     for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
         real = os.path.realpath(dirpath)
-        if real in seen:
+        branch = ancestors.pop(dirpath, frozenset())
+        if real in branch:
             dirnames[:] = []
             continue
-        seen.add(real)
         dirnames.sort()
+        for dirname in dirnames:
+            ancestors[os.path.join(dirpath, dirname)] = branch | {real}
         for filename in filenames:
             if pattern and not fnmatch.fnmatch(filename, pattern):
                 continue
@@ -164,12 +168,12 @@ def collect_project_config(project_path: str | Path) -> dict:
 
     # Settings (not settings.local.json)
     settings_file = claude_dir / 'settings.json'
-    if settings_file.exists():
+    if settings_file.is_file():
         config['settings'] = settings_file
 
     # CLAUDE.md
     claude_md = project_path / 'CLAUDE.md'
-    if claude_md.exists():
+    if claude_md.is_file():
         config['claude_md'] = claude_md
 
     return config

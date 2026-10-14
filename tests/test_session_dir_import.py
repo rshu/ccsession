@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -146,3 +147,49 @@ def test_history_records_without_timestamp_are_not_collapsed(tmp_path, monkeypat
     manifest = {"session_data": {"history": "session/history.jsonl"}}
     assert import_history(export, manifest, _plan(), "/new") == 2
     assert import_history(export, manifest, _plan(), "/new") == 0
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_mirror_file_symlink_cannot_read_outside_the_export(tmp_path):
+    export = tmp_path / "export"
+    mirror = export / "session" / "session-dir"
+    mirror.mkdir(parents=True)
+    outside = tmp_path / "secret.txt"
+    outside.write_text("private", encoding="utf-8")
+    (mirror / "tool-result.txt").symlink_to(outside)
+    target = tmp_path / "target" / NEW_SID
+
+    with pytest.raises(InvalidExportError, match="outside the export"):
+        import_session_dir(export, {"session_data": {"session_dir": "session/session-dir/"}}, target, _plan())
+
+    assert not target.exists()
+
+
+def test_a_subagent_sidecar_must_be_a_json_object(tmp_path):
+    manifest = _layout2_export(tmp_path / "export")
+    sidecar = tmp_path / "export" / "session" / "session-dir" / "subagents" / f"agent-{AGENT}.meta.json"
+    sidecar.write_text('["not", "metadata"]', encoding="utf-8")
+    target = tmp_path / "target" / NEW_SID
+
+    with pytest.raises(InvalidExportError, match="JSON object"):
+        import_session_dir(tmp_path / "export", manifest, target, _plan())
+
+    assert not target.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("dangling", [False, True])
+def test_a_session_directory_symlink_is_not_written_through(tmp_path, dangling):
+    manifest = _layout2_export(tmp_path / "export")
+    outside = tmp_path / "outside"
+    if not dangling:
+        outside.mkdir()
+    target = tmp_path / "target" / NEW_SID
+    target.parent.mkdir()
+    target.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(FileExistsError, match="symlink"):
+        import_session_dir(tmp_path / "export", manifest, target, _plan())
+
+    assert target.is_symlink()
+    assert not outside.exists() or list(outside.iterdir()) == []

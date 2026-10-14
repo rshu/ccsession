@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 
 from ccsession.errors import InvalidExportError
@@ -105,17 +106,24 @@ def place_file(source: Path, target: Path, *, journal=None, kind: str) -> None:
     still holds exactly that content, so it never deletes a file someone else put
     there after a failed import.
     """
-    tmp = target.with_name(f'.{target.name}.ccsession-tmp-{os.getpid()}')
+    tmp = target.with_name(f'.{target.name}.ccsession-tmp-{uuid.uuid4().hex}')
     if journal is not None:
         journal.record(kind, path=str(target), tmp=str(tmp), **file_digest(source))
+    created_tmp = False
     try:
+        # A stale temporary file or symlink must never be opened for writing. The
+        # journal is durable before even this exclusive allocation happens.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        created_tmp = True
+        os.close(fd)
         copy_file_writable(source, tmp)
         os.replace(tmp, target)
     except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        if created_tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         raise
     if journal is not None:
         journal.record(f'{kind}_done', path=str(target))
@@ -140,7 +148,9 @@ def apply_config_import(plan: dict, summary: dict | None = None, *, journal=None
 
     for name in CONFIG_TYPES:
         for source_path, target_path in plan.get(name, []):
-            if os.path.lexists(target_path):
+            if os.path.lexists(target_path) or any(
+                    parent.is_symlink() or (os.path.lexists(parent) and not parent.is_dir())
+                    for parent in target_path.parents):
                 summary['conflicts'].append(str(target_path))
                 continue
             for directory in reversed(_missing_ancestors(target_path.parent)):
@@ -168,7 +178,7 @@ def import_config(export_path: Path, manifest: dict, project_path: Path) -> dict
 
 def claude_md_note(manifest: dict) -> str:
     """The import-context section appended to the project's CLAUDE.md."""
-    original_context = manifest.get('original_context', {})
+    original_context = manifest.get('original_context') or {}
     return f"""
 
 ## Imported Session Context

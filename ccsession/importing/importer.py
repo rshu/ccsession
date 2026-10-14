@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -11,9 +12,12 @@ from ccsession.importing.uuids import generate_new_session_id
 from ccsession.importing.remap import build_remap_plan, most_common_cwd, remap_records
 from ccsession.importing.snapshot import ImportJournal, create_snapshot, record_import_artifacts
 from ccsession.importing.session_io import read_session_jsonl, write_session_file
-from ccsession.importing.auxiliary import import_file_history, resolve_file_history_sources
+from ccsession.importing.auxiliary import (
+    import_file_history, resolve_file_history_sources, validate_file_history_target,
+)
 from ccsession.importing.session_dir import (
-    append_history, prepare_session_dir, read_export_history, rewrite_history_records, write_session_dir,
+    append_history, prepare_session_dir, read_agent_transcripts, read_export_history,
+    rewrite_history_records, write_session_dir,
 )
 from ccsession.importing.config import (
     add_claude_md_note, apply_config_import, claude_md_note, new_config_summary, plan_config_import,
@@ -64,7 +68,7 @@ def import_session(export_path: Path, project_path: Path | None = None,
     manifest = validate_manifest(export_path)
     info(f"✓ Valid ccsession export (v{manifest.get('ccsession_version', 'unknown')})")
 
-    original_context = manifest.get('original_context', {})
+    original_context = manifest.get('original_context') or {}
     info(f"✓ Exported by: {original_context.get('user', 'Unknown')}")
     info(f"✓ Original platform: {original_context.get('platform', 'Unknown')}")
 
@@ -78,6 +82,9 @@ def import_session(export_path: Path, project_path: Path | None = None,
 
     # 3. Check for conflicts
     target_dir = get_projects_dir(project_path)
+    if target_dir.is_symlink():
+        raise FileExistsError(f"Project session directory is a symlink: {target_dir}\n"
+                              "Import aborted because a restore cannot safely replace this directory.")
     old_session_id = manifest.get('session_id')
 
     if preserve_session_id:
@@ -85,7 +92,7 @@ def import_session(export_path: Path, project_path: Path | None = None,
         new_session_id = old_session_id
         target_session_path = target_dir / f'{new_session_id}.jsonl'
 
-        if target_session_path.exists():
+        if os.path.lexists(target_session_path):
             raise FileExistsError(
                 f"Session ID {new_session_id} already exists locally.\n"
                 "Import aborted. Options:\n"
@@ -97,6 +104,9 @@ def import_session(export_path: Path, project_path: Path | None = None,
         target_session_path = target_dir / f'{new_session_id}.jsonl'
 
     target_session_dir = target_dir / new_session_id
+    if target_session_dir.is_symlink():
+        raise FileExistsError(f"Session directory is a symlink: {target_session_dir}\n"
+                              "Import aborted to prevent writing outside the session directory.")
     if target_session_dir.exists() and any(target_session_dir.iterdir()):
         raise FileExistsError(
             f"Session directory already exists and is not empty: {target_session_dir}\n"
@@ -141,7 +151,7 @@ def import_session(export_path: Path, project_path: Path | None = None,
     plan = build_remap_plan(
         messages, agent_records,
         old_session_id=old_session_id, new_session_id=new_session_id,
-        old_project_path=most_common_cwd(messages) or manifest.get('original_context', {}).get('repo_path'),
+        old_project_path=most_common_cwd(messages) or original_context.get('repo_path'),
         new_project_path=project_text,
         new_session_dir=target_dir / new_session_id,
         new_file_history_dir=get_file_history_dir(new_session_id),
@@ -158,6 +168,8 @@ def import_session(export_path: Path, project_path: Path | None = None,
     history_records = [] if skip_auxiliary else read_export_history(export_path, manifest)
     rewrite_history_records(history_records, plan, project_text)  # refuse what cannot be processed, now
     file_history_sources = [] if skip_auxiliary else resolve_file_history_sources(export_path, manifest)
+    if file_history_sources:
+        validate_file_history_target(get_file_history_dir(new_session_id))
     config_plan = None if skip_config else plan_config_import(export_path, manifest, project_path)
 
     # 5. Create pre-import snapshot (nothing above has written anything)
@@ -320,11 +332,12 @@ def _confirm(question: str) -> bool:
 
 
 def _read_agent_transcripts(export_path: Path, manifest: dict) -> dict[str, list[dict]]:
-    """Sub-agent transcripts in the export, keyed by agent id, for id-map building."""
-    agents: dict[str, list[dict]] = {}
-    for relative in manifest.get('session_data', {}).get('agent_sessions', []):
+    """Sub-agent transcripts in the export, keyed by source path, for id-map building."""
+    agents = read_agent_transcripts(export_path, manifest)
+    for relative in manifest.get('session_data', {}).get('agent_sessions', []) or []:
         path = resolve_export_path(export_path, relative)
         name = path.name
         if path.is_file() and name.startswith('agent-') and name.endswith('.jsonl'):
-            agents[name[len('agent-'):-len('.jsonl')]] = read_session_jsonl(path)
+            if str(path) not in agents:
+                agents[str(path)] = read_session_jsonl(path)
     return agents

@@ -18,14 +18,10 @@ from ccsession.output import info, warn
 from ccsession.utils import json_line, write_json
 
 
-def _write_legacy_files(export_dir: Path, session_path: Path, messages: list[dict],
-                        metadata: dict) -> None:
-    """Write legacy export files (metadata, raw JSONL, markdown, XML, summary)."""
+def _write_legacy_files(export_dir: Path, messages: list[dict], metadata: dict) -> None:
+    """Write legacy metadata, markdown, XML and summary from the captured JSONL."""
     # Save metadata
     write_json(export_dir / 'session_info.json', metadata)
-
-    # Copy raw JSONL
-    shutil.copy2(session_path, export_dir / 'raw_messages.jsonl')
 
     # Generate markdown conversation
     # The human-readable files tolerate text UTF-8 cannot encode (a lone surrogate from a
@@ -159,23 +155,18 @@ def export_session(session_info: dict, project_path: str | Path,
     Returns:
         Tuple of (export_dir, manifest) where manifest is None for classic mode.
     """
+    if mode not in ('portable', 'classic'):
+        raise ValueError(f"Invalid export mode {mode!r}: use 'portable' or 'classic'")
     project_path = Path(project_path)
-
-    # Parse the session file
-    messages, metadata = parse_jsonl_file(session_info['path'])
-
-    # Get session ID — prefer the filename-based ID (canonical) over JSONL-internal sessionId
+    session_info = dict(session_info, path=Path(session_info['path']))
     session_id = session_info['session_id']
-    metadata['session_id'] = session_id
-    msg_meta = extract_message_metadata(messages)
-    slug = msg_meta['slug']
 
     if export_name is not None:
         _check_export_name(export_name)
 
     # Auto-generate export name if not provided
     if not export_name:
-        timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d_%H-%M-%S')
+        timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d_%H-%M-%S_%f')
         export_name = f"{timestamp}_{session_id[:8]}" if mode == 'classic' else timestamp
 
     # Determine output directory
@@ -186,20 +177,27 @@ def export_session(session_info: dict, project_path: str | Path,
     else:
         export_dir = Path.home() / 'claude_sessions' / 'exports' / export_name
 
-    # Only a directory this call created may be removed if the export fails
+    # Reusing a directory mixes old snapshots with new ones and can corrupt an
+    # existing export on failure. mkdir also rejects files and symlinks here.
     export_dir.parent.mkdir(parents=True, exist_ok=True)
     try:
         export_dir.mkdir()
-        created_dir = True
-    except FileExistsError:
-        created_dir = False
+    except FileExistsError as exc:
+        raise FileExistsError(f"Export destination already exists: {export_dir}. "
+                              "Choose a different export name.") from exc
     try:
+        # Capture the live transcript once. Every format describes these exact
+        # bytes even if Claude appends more turns while the export is running.
+        shutil.copy2(session_info['path'], export_dir / 'raw_messages.jsonl')
+        messages, metadata = parse_jsonl_file(export_dir / 'raw_messages.jsonl')
+        # Prefer the filename-based ID over the JSONL-internal sessionId.
+        metadata['session_id'] = session_id
+        msg_meta = extract_message_metadata(messages)
         return _write_export(export_dir, session_info, project_path, messages, metadata, msg_meta,
-                             session_id=session_id, slug=slug, export_name=export_name, mode=mode)
+                             session_id=session_id, slug=msg_meta['slug'], export_name=export_name, mode=mode)
     except BaseException:
         # Never leave a half-written export behind (it would look importable but is not)
-        if created_dir:
-            shutil.rmtree(export_dir, ignore_errors=True)
+        shutil.rmtree(export_dir, ignore_errors=True)
         raise
 
 
@@ -209,7 +207,7 @@ def _write_export(export_dir: Path, session_info: dict, project_path: Path, mess
     """Write every file of the export into ``export_dir``."""
     # Write legacy files (both modes)
     info("\U0001f4dd Writing legacy files...")
-    _write_legacy_files(export_dir, session_info['path'], messages, metadata)
+    _write_legacy_files(export_dir, messages, metadata)
 
     if mode == 'classic':
         return export_dir, None
@@ -256,7 +254,7 @@ def _write_export(export_dir: Path, session_info: dict, project_path: Path, mess
     session_dir.mkdir(exist_ok=True)
 
     # Main session
-    shutil.copy2(session_info['path'], session_dir / 'main.jsonl')
+    shutil.copy2(export_dir / 'raw_messages.jsonl', session_dir / 'main.jsonl')
 
     # File history
     _copy_files_to_dir(file_history, session_dir / 'file-history',
@@ -318,7 +316,8 @@ def _write_export(export_dir: Path, session_info: dict, project_path: Path, mess
     info("\U0001f4dd Writing trajectory.json...")
     trajectory = format_trajectory(
         messages, metadata, msg_meta,
-        agent_sessions=agent_sessions,
+        agent_sessions={agent_id: mirror_dir / source.relative_to(session_dir_root)
+                        for agent_id, source in agent_sessions.items()},
     )
     write_json(export_dir / 'trajectory.json', trajectory)
 

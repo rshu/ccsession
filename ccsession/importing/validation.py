@@ -84,6 +84,9 @@ def _check_manifest_shape(manifest: dict) -> None:
     for field in ('original_context', 'config_snapshot', 'statistics'):
         if manifest.get(field) is not None and not isinstance(manifest[field], dict):
             raise bad(field, 'an object')
+    repo_path = (manifest.get('original_context') or {}).get('repo_path')
+    if repo_path is not None and not isinstance(repo_path, str):
+        raise bad('original_context.repo_path', 'a path')
     session_data = manifest.get('session_data')
     if not isinstance(session_data, dict):
         raise bad('session_data', 'an object')
@@ -192,7 +195,10 @@ def resolve_export_path(export_path: Path, relative: str) -> Path:
             "The export may be corrupted or tampered with."
         )
     root = Path(export_path).resolve()
-    candidate = (root / relative).resolve()
+    try:
+        candidate = (root / relative).resolve()
+    except (OSError, RuntimeError, ValueError) as e:
+        raise InvalidExportError(f"Manifest path {relative!r} cannot be resolved: {e}") from e
     if candidate != root and root not in candidate.parents:
         raise InvalidExportError(
             f"Manifest path {relative!r} points outside the export directory {root}.\n"

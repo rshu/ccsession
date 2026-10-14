@@ -21,7 +21,7 @@ MODEL=${CCSESSION_E2E_MODEL:-sonnet}
 while [ $# -gt 0 ]; do
   case "$1" in
     --keep) KEEP=1 ;;
-    --model) MODEL=$2; shift ;;
+    --model) [ $# -ge 2 ] || { echo "--model requires a value" >&2; exit 2; }; MODEL=$2; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -33,14 +33,20 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 WORK_TMP=$(mktemp -d "${TMPDIR:-/tmp}/ccsession-e2e.XXXXXX") || { echo "mktemp failed" >&2; exit 2; }
 WORK=$(cd "$WORK_TMP" && pwd -P)
 case "$WORK" in "${TMPDIR:-/tmp}"*|/tmp/*|/private/*|/var/*) ;; *) echo "unexpected work dir: $WORK" >&2; exit 2 ;; esac
-CLAUDE_DIR=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
 export PYTHONPATH=$REPO${PYTHONPATH:+:$PYTHONPATH}
+# Resolve once before any project subshell changes directory. Otherwise a
+# relative CLAUDE_CONFIG_DIR sends the CLI, backup and cleanup to different stores.
+CUSTOM_CONFIG=$(python3 -c 'import os; print(int(bool(os.environ.get("CLAUDE_CONFIG_DIR", "").strip())))')
+CLAUDE_DIR=$(python3 -c 'from ccsession.paths import get_claude_dir; print(get_claude_dir())')
+if [ "$CUSTOM_CONFIG" = 1 ]; then
+  export CLAUDE_CONFIG_DIR=$CLAUDE_DIR
+fi
 # The session id is chosen up front so cleanup can find the session even when
 # `claude -p` fails or is interrupted after writing it.
 SID=$(python3 -c 'import uuid; print(uuid.uuid4())')
 NEW_SID=""
 # Mirrors ccsession.paths.get_import_storage_dir
-if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+if [ "$CUSTOM_CONFIG" = 1 ]; then
   IMPORT_STORAGE=$CLAUDE_DIR/ccsession-imports
 else
   IMPORT_STORAGE=$HOME/.claude-session-imports
@@ -125,7 +131,7 @@ cleanup() {
     return
   fi
   for p in "$WORK/proj" "$WORK/proj2"; do
-    norm=$(python3 -c "from ccsession.paths import get_normalized_project_dir as n; print(n('$p'))")
+    norm=$(python3 -c 'import sys; from ccsession.paths import get_normalized_project_dir as n; print(n(sys.argv[1]))' "$p")
     rm -rf "$CLAUDE_DIR/projects/$norm"
   done
   for sid in $SID $NEW_SID; do

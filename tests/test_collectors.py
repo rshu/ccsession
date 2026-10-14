@@ -170,3 +170,38 @@ def test_symlinked_skill_directories_are_collected(tmp_path):
     skills = collect_project_config(tmp_path / "proj")["skills"]
 
     assert sorted(cf.relative for cf in skills) == ["team-skill/SKILL.md", "team-skill/helper.py"]
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='symlinks need privileges on Windows')
+def test_shared_skill_directory_is_preserved_under_each_alias(tmp_path):
+    shared = tmp_path / 'shared'
+    _touch(shared / 'SKILL.md')
+    skills_root = tmp_path / 'project' / '.claude' / 'skills'
+    skills_root.mkdir(parents=True)
+    (skills_root / 'first').symlink_to(shared, target_is_directory=True)
+    (skills_root / 'second').symlink_to(shared, target_is_directory=True)
+
+    assert [cf.relative for cf in collect_project_config(tmp_path / 'project')['skills']] == [
+        'first/SKILL.md', 'second/SKILL.md']
+
+
+def test_directories_named_like_config_files_are_not_collected(tmp_path):
+    (tmp_path / '.claude' / 'settings.json').mkdir(parents=True)
+    (tmp_path / 'CLAUDE.md').mkdir()
+    config = collect_project_config(tmp_path)
+    assert config['settings'] is None
+    assert config['claude_md'] is None
+
+
+def test_directories_named_like_agent_transcripts_are_not_collected(tmp_path):
+    (tmp_path / SESSION_ID / 'subagents' / 'agent-bogus.jsonl').mkdir(parents=True)
+    assert collect_agent_sessions(tmp_path, SESSION_ID) == {}
+
+
+def test_regular_files_in_auxiliary_directory_slots_are_ignored(tmp_path, monkeypatch):
+    from ccsession.export.collectors import collect_file_history, collect_session_env
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    _touch(tmp_path / '.claude' / 'file-history' / SESSION_ID)
+    _touch(tmp_path / '.claude' / 'session-env' / SESSION_ID)
+    assert collect_file_history(SESSION_ID) == []
+    assert collect_session_env(SESSION_ID) is None
