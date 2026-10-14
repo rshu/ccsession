@@ -7,7 +7,7 @@ from pathlib import Path
 _NORMALIZE_TABLE = str.maketrans({'/': '-', '\\': '-', ':': '-', '.': '-', '_': '-'})
 
 
-def get_normalized_project_dir(project_path: str | Path) -> str:
+def get_normalized_project_dir(project_path: str | Path, *, platform: str | None = None) -> str:
     """Get the normalized Claude project directory name for a given path.
 
     Replicates Claude Code's path normalization:
@@ -18,9 +18,12 @@ def get_normalized_project_dir(project_path: str | Path) -> str:
     - _ -> -
     - Unix paths: prefix with -
     - Windows paths: no prefix
+
+    ``platform`` is ``os.name`` (``'posix'`` or ``'nt'``) and defaults to the current one.
     """
+    platform = platform or os.name
     project_path = str(project_path)
-    if os.name != 'nt':
+    if platform != 'nt':
         project_path = project_path.replace('\\', '/')
 
     project_dir_name = project_path.translate(_NORMALIZE_TABLE)
@@ -28,10 +31,9 @@ def get_normalized_project_dir(project_path: str | Path) -> str:
     if project_dir_name.startswith('-'):
         project_dir_name = project_dir_name[1:]
 
-    if os.name == 'nt':
+    if platform == 'nt':
         return project_dir_name
-    else:
-        return f'-{project_dir_name}'
+    return f'-{project_dir_name}'
 
 
 def get_claude_dir() -> Path:
