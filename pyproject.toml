@@ -3,10 +3,11 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ccsession"
+name = "ccsession-cli"
 dynamic = ["version"]
 description = "Export, import, and restore Claude Code sessions"
 readme = "README.md"
+authors = [{ name = "Rui Shu" }]
 license = "MIT"
 requires-python = ">=3.9"
 keywords = ["claude", "claude-code", "session", "export", "trajectory"]
@@ -19,6 +20,8 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
     "Topic :: Software Development :: Documentation",
 ]
 
@@ -29,9 +32,10 @@ dev = ["pytest>=7.0.0"]
 ccsession = "ccsession.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/jimmc414/ccsession"
-Repository = "https://github.com/jimmc414/ccsession"
-Issues = "https://github.com/jimmc414/ccsession/issues"
+Homepage = "https://github.com/rshu/ccsession"
+Repository = "https://github.com/rshu/ccsession"
+Issues = "https://github.com/rshu/ccsession/issues"
+Changelog = "https://github.com/rshu/ccsession/blob/main/CHANGELOG.md"
 
 [tool.setuptools.dynamic]
 version = {attr = "ccsession.CCSESSION_VERSION"}

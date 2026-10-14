@@ -2,7 +2,6 @@
 # Project-specific
 .claude/
 .claude-sessions/
-.github/
 openspec/
 
 # Outputs
@@ -86,6 +85,7 @@ target/
 
 # Python
 __pycache__/
+.hypothesis/
 __pypackages__/
 *.egg-info/
 .ipynb_checkpoints
