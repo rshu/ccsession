@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -93,14 +94,36 @@ def test_rewrite_keeps_mode_and_symlink(tmp_path):
 
 def test_long_operation_refreshes_the_history_lock(tmp_path, monkeypatch):
     import ccsession.history_file as history_module
-    monkeypatch.setattr(history_module, "LOCK_STALE_SECONDS", 0.12)
     history = tmp_path / "history.jsonl"
+    lock = Path(os.path.realpath(history) + ".lock")
+    refreshed = threading.Event()
+    refresh_guard = threading.Lock()
+    real_utime = os.utime
+    frozen_now = time.time()
+
+    def observe_refresh(path, *args, **kwargs):
+        with refresh_guard:
+            real_utime(path, *args, **kwargs)
+            if path == str(lock):
+                refreshed.set()
+
+    monkeypatch.setattr(history_module.os, "utime", observe_refresh)
+    # Keep the real heartbeat interval and timeout clock. Freeze only the stale
+    # check's wall clock so a loaded runner cannot age a refreshed lock before
+    # the contender gets scheduled.
+    monkeypatch.setattr(history_module, "time", SimpleNamespace(
+        time=lambda: frozen_now, monotonic=time.monotonic, sleep=time.sleep,
+    ))
     with history_lock(history):
-        # Wait through multiple stale intervals. A second Claude Code writer must
-        # still be unable to break the active lock and enter the critical section.
-        time.sleep(0.3)
+        with refresh_guard:
+            old = frozen_now - 2 * history_module.LOCK_STALE_SECONDS
+            real_utime(lock, (old, old))
+            refreshed.clear()
+        assert refreshed.wait(timeout=20), "the history lock heartbeat did not refresh the lock"
+        assert frozen_now - lock.stat().st_mtime < history_module.LOCK_STALE_SECONDS
+        # A real filesystem refresh must keep another Claude Code writer out.
         with pytest.raises(HistoryBusyError, match="locked"):
-            with history_lock(history, timeout=0.08):
+            with history_lock(history, timeout=0.2):
                 pytest.fail("an active history lock was treated as stale")
 
 
