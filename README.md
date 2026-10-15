@@ -3,8 +3,10 @@
 [![CI](https://github.com/rshu/ccsession/actions/workflows/ci.yml/badge.svg)](https://github.com/rshu/ccsession/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/ccsession-cli?cacheSeconds=3600)](https://pypi.org/project/ccsession-cli/)
 [![Python versions](https://img.shields.io/pypi/pyversions/ccsession-cli?cacheSeconds=3600)](https://pypi.org/project/ccsession-cli/)
-[![Downloads](https://static.pepy.tech/badge/ccsession-cli/month)](https://pepy.tech/projects/ccsession-cli)
+[![Downloads](https://img.shields.io/pypi/dm/ccsession-cli?cacheSeconds=3600)](https://pypi.org/project/ccsession-cli/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+<!-- The download count appears after PyPI Stats indexes the new package. -->
 
 Export, import, and restore Claude Code sessions.
 
