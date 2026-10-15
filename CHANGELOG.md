@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.1 — 2026-10-15
 
 Exports keep `layout_version` 2; exports written by 2.1.0 still import.
 
